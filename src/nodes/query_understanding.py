@@ -75,7 +75,7 @@ Return a VALID JSON object with EXACTLY these keys:
 
   "concept_type": 
       "one of: diagnosis | observation | procedure | finding | 
-       lab_result | medication | demographic | mixed",
+       lab_result | medication | demographic | situation | mixed",
 
   "snomed_top_hierarchy": 
       "one of: Clinical Finding | Procedure | Observable Entity | 
@@ -169,6 +169,16 @@ def _parse_llm_response(content: str) -> dict:
     print("[query_understanding] WARNING: Could not parse LLM JSON response")
     return {}
 
+VALID_CONCEPT_TYPES = {
+    "diagnosis", "observation", "procedure", "finding",
+    "lab_result", "medication", "demographic", "situation", "mixed"
+}
+
+VALID_SNOMED_HIERARCHIES = {
+    "Clinical Finding", "Procedure", "Observable Entity",
+    "Substance", "Body Structure", "Situation", "Mixed"
+}
+
 
 def _validate_parsed_output(parsed: dict, research_question: str) -> dict:
     """
@@ -181,6 +191,20 @@ def _validate_parsed_output(parsed: dict, research_question: str) -> dict:
         primary = research_question[:50].strip()
         print(f"[query_understanding] WARNING: No primary_condition from LLM, "
               f"using fallback: '{primary}'")
+
+    # Validate concept_type — fall back to "diagnosis" if LLM hallucinates a value
+    concept_type = parsed.get("concept_type", "diagnosis")
+    if concept_type not in VALID_CONCEPT_TYPES:
+        print(f"[query_understanding] WARNING: Invalid concept_type '{concept_type}', "
+              f"falling back to 'diagnosis'")
+        concept_type = "diagnosis"
+
+    # Validate snomed_top_hierarchy — fall back if LLM invents a value
+    snomed_hierarchy = parsed.get("snomed_top_hierarchy", "Clinical Finding")
+    if snomed_hierarchy not in VALID_SNOMED_HIERARCHIES:
+        print(f"[query_understanding] WARNING: Invalid snomed_top_hierarchy "
+              f"'{snomed_hierarchy}', falling back to 'Clinical Finding'")
+        snomed_hierarchy = "Clinical Finding"
 
     return {
         "primary_condition":             primary,
@@ -200,7 +224,8 @@ def _validate_parsed_output(parsed: dict, research_question: str) -> dict:
 async def _enrich_with_nhs_synonyms(
     initial_search_terms: list[str],
     primary_condition: str,
-    explicit_exclusions: list[str]
+    explicit_exclusions: list[str],
+    concept_type: str = "clinical_finding"
 ) -> list[str]:
     """
     Node 1b: Enrich search_terms with official NHS SNOMED synonyms.
@@ -239,6 +264,7 @@ async def _enrich_with_nhs_synonyms(
             # Step 1: Find concept IDs for primary condition
             initial_results = await search_tool.ainvoke({
                 "term": primary_condition,
+                "concept_type": concept_type,
                 "max_results": 5
             })
 
@@ -254,9 +280,8 @@ async def _enrich_with_nhs_synonyms(
                 if not concept_id:
                     continue
 
-                synonyms = await synonyms_tool.ainvoke(
-                    {"concept_id": concept_id}
-                )
+                result   = await synonyms_tool.ainvoke({"concept_id": concept_id})
+                synonyms = result.get("synonyms", []) if isinstance(result, dict) else []
 
                 for syn in synonyms:
                     term = syn.get("term", "").strip()
@@ -305,21 +330,28 @@ async def query_understanding_node(state: NICEState) -> dict:
     research_question = state["research_question"]
 
    # ── RAG: retrieve relevant NICE guideline chunks ──────────────
-    retriever       = get_retriever(k=4)
-    guideline_docs  = retriever.get_relevant_documents(research_question)
+    retriever         = get_retriever(k=4)
+    guideline_context = "No relevant guidelines retrieved."
+    retrieved_sources = []
 
-    # Build grounded context with citable source references
-    guideline_context = "\n\n".join([
-        f"[Source: {doc.metadata.get('display_name', 'Unknown')} "
-        f"p.{doc.metadata.get('page', '?')}]\n{doc.page_content}"
-        for doc in guideline_docs
-    ]) if guideline_docs else "No relevant guidelines retrieved."
-
-    retrieved_sources = list(dict.fromkeys([
-        doc.metadata.get("display_name", "Unknown")
-        for doc in guideline_docs
-    ]))
-    print(f"[query_understanding] RAG retrieved from: {retrieved_sources}")
+    if retriever is not None:
+        try:
+            guideline_docs = retriever.invoke(research_question)
+            if guideline_docs:
+                guideline_context = "\n\n".join([
+                    f"[Source: {doc.metadata.get('display_name', 'Unknown')} "
+                    f"p.{doc.metadata.get('page', '?')}]\n{doc.page_content}"
+                    for doc in guideline_docs
+                ])
+                retrieved_sources = list(dict.fromkeys([
+                    doc.metadata.get("display_name", "Unknown")
+                    for doc in guideline_docs
+                ]))
+                print(f"[query_understanding] RAG retrieved from: {retrieved_sources}")
+        except Exception as e:
+            print(f"[query_understanding] RAG retrieval failed: {e}")
+    else:
+        print("[query_understanding] RAG skipped — vector store not built yet")
 
     # ── LLM Call — grounded ───────────────────────────────────────
     messages = [
@@ -378,7 +410,8 @@ All other fields: use your clinical expertise as normal.
     enriched_terms = await _enrich_with_nhs_synonyms(
         initial_search_terms=cleaned["search_terms"],
         primary_condition=cleaned["primary_condition"],
-        explicit_exclusions=cleaned["explicit_exclusions"]
+        explicit_exclusions=cleaned["explicit_exclusions"],
+        concept_type=cleaned["concept_type"]
     )
 
     print(f"\n[query_understanding] ── Complete ──")

@@ -45,6 +45,8 @@ class NICEState(TypedDict):
     suggested_validation_sources: List[str]   
     search_terms:                 List[str]
     ambiguity_notes:              str         
+    rag_context:                  str
+    rag_sources:                  List[str]
 
     # --- Node 2 Output ---
     candidate_codes:              List[CandidateCode]

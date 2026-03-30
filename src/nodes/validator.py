@@ -12,6 +12,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from src.state import NICEState, ValidatedCode
 from config.trud_refset_index import fuzzy_match_trud
+#from tools.trud_lookup import load_refset, refset_exists
+from tools.trud_data import get_members, refset_exists, get_refset_name
 
 # -------------------------------------------------------------------
 # UNIVERSAL Confidence Weights — condition-agnostic
@@ -20,7 +22,6 @@ CONFIDENCE_WEIGHTS = {
     "found_in_nhsd_refset":         +0.50,
     "found_in_qof_register":        +0.45,   # QOF-specific signal
     "found_in_trud_refset":         +0.40,  # slightly lower — local copy may lag
-    "found_in_multiple_codelists":  +0.55,
     "found_in_one_codelist":        +0.35,
     "clinical_course_matches":      +0.10,
     "finding_site_matches":         +0.05,
@@ -40,66 +41,60 @@ TIER_THRESHOLDS = {
 # ===================================================================
 # LAYER 1: OpenCodelists Discovery
 # ===================================================================
-async def _layer1_opencodelists(
-    client,
-    suggested_sources: list[str],
-    primary_condition: str
+from config.opencodelists_index import OPENCODELISTS_INDEX
+from tools.opencodelists_loader import load_codelist_from_url
+
+def _layer1_opencodelists(
+    primary_condition: str,
+    search_terms: list[str]
 ) -> list[dict]:
-    """
-    Layer 1: Search OpenCodelists API dynamically.
-    Uses suggested_validation_sources from Node 1 as search queries.
-    """
-    tools = client.get_tools()
-    search_tool = next(
-        (t for t in tools if t.name == "search_codelists"), None
-    )
-    if not search_tool:
-        print("[validator:L1] search_codelists tool unavailable")
-        return []
+    all_text = " ".join([primary_condition] + search_terms).lower()
+    codelists = []
+    seen_urls = set()
 
-    queries = list(dict.fromkeys(
-        (suggested_sources or []) + [primary_condition]
-    ))[:5]
+    for keyword, entries in OPENCODELISTS_INDEX.items():
+        if keyword in all_text:
+            for entry in entries:
+                if entry["url"] in seen_urls:
+                    continue
+                seen_urls.add(entry["url"])
+                members = load_codelist_from_url(entry["url"])
+                if members:
+                    codelists.append({
+                        "codelist_id":     f"opencodelists/{entry['org']}/{keyword}",
+                        "name":            entry["name"],
+                        "organisation":    entry["org"],
+                        "members":         members,
+                        "discovery_layer": "opencodelists"
+                    })
+                    print(f"[validator:L1] Loaded '{entry['name']}': {len(members)} codes")
 
-    tasks = [search_tool.ainvoke({"condition": q}) for q in queries]
-    results_list = await asyncio.gather(*tasks, return_exceptions=True)
-
-    seen, codelists = set(), []
-    for results in results_list:
-        if isinstance(results, Exception):
-            continue
-        for cl in (results or []):
-            cid = cl.get("codelist_id")
-            if cid and cid not in seen:
-                codelists.append({**cl, "discovery_layer": "opencodelists"})
-                seen.add(cid)
-
-    print(f"[validator:L1] Found {len(codelists)} codelists via OpenCodelists API")
+    print(f"[validator:L1] Found {len(codelists)} codelists")
     return codelists
 
+def _extract_snomed_id(member: dict) -> str | None:
+    """Extract SNOMED concept ID — explicit keys only, never generic 'id'."""
+    for key in ("snomed_id", "concept_id", "conceptId",
+                "code", "referencedComponentId"):   # ← "id" REMOVED
+        val = member.get(key, "")
+        if val and str(val).strip():
+            # Validate it looks like a SNOMED ID (6-18 digits, no hyphens)
+            cleaned = str(val).strip()
+            if cleaned.isdigit() and 6 <= len(cleaned) <= 18:
+                return cleaned
+    return None
 
 # ===================================================================
 # LAYER 2: TRUD Local Refset Index
 # ===================================================================
-async def _layer2_trud(
-    client,
+def _layer2_trud(
     primary_condition: str,
     search_terms: list[str]
 ) -> list[dict]:
     """
     Layer 2: Match against TRUD refset index using fuzzy keyword matching.
-    Loads matched refsets from local TRUD data via trud_mcp.py tool.
+    Loads matched refsets from local TRUD CSV files directly.
     """
-    tools = client.get_tools()
-    trud_tool = next(
-        (t for t in tools if t.name == "get_refset_by_id"), None
-    )
-    if not trud_tool:
-        print("[validator:L2] get_refset_by_id tool unavailable — "
-              "is trud_mcp.py running?")
-        return []
-
-    # Match condition + all search terms against TRUD index
     all_text = " ".join([primary_condition] + search_terms)
     matches = fuzzy_match_trud(all_text)
 
@@ -107,24 +102,26 @@ async def _layer2_trud(
         print(f"[validator:L2] No TRUD refset match for '{primary_condition}'")
         return []
 
-    print(f"[validator:L2] TRUD matches: "
-          f"{[(kw, rid) for kw, rid in matches]}")
+    print(f"[validator:L2] TRUD matches: {[(kw, rid) for kw, rid in matches]}")
 
-    # Load each matched refset
     trud_codelists = []
     for keyword, refset_id in matches:
-        refset_members = await trud_tool.ainvoke({"refset_id": refset_id})
-        if refset_members and "error" not in refset_members[0]:
+        if not refset_exists(refset_id):
+            print(f"[validator:L2] Refset file missing: {refset_id}")
+            continue
+
+        members = get_members(refset_id)
+        
+        if members:
             trud_codelists.append({
-                "codelist_id":    f"trud/{refset_id}",
-                "name":           f"TRUD Refset {refset_id} ({keyword})",
-                "organisation":   "NHS Digital (TRUD)",
-                "refset_id":      refset_id,
-                "members":        {r["snomed_id"] for r in refset_members},
+                "codelist_id":     f"trud/{refset_id}",
+                "name":            f"TRUD Refset {refset_id} ({keyword})",
+                "organisation":    "NHS Digital (TRUD)",
+                "refset_id":       refset_id,
+                "members":         members,
                 "discovery_layer": "trud"
             })
-            print(f"[validator:L2] Loaded TRUD refset {refset_id}: "
-                  f"{len(refset_members)} members")
+            print(f"[validator:L2] Loaded {refset_id}: {len(members)} members")
 
     return trud_codelists
 
@@ -160,148 +157,153 @@ def _layer3_flag_if_empty(
 # CODE-LEVEL VALIDATION
 # ===================================================================
 async def _validate_single_code(
-    client,
     candidate: dict,
     all_codelists: list[dict],
     primary_condition: str,
     expected_course: str,
     concept_type: str,
-    explicit_exclusions: list[str]
+    explicit_exclusions: list[str],
+    client=None
 ) -> tuple[dict | None, str | None]:
-    """
-    Validate a single candidate code against all discovered codelists.
-    Returns: (ValidatedCode, None) OR (None, snomed_id_for_low_confidence)
-    """
+
     snomed_id      = candidate.get("snomed_id", "")
     preferred_term = candidate.get("preferred_term", "")
     source         = candidate.get("source", "snomed_search")
     score          = 0.0
 
-    # --- Hard exclusion check ---
     if any(excl.lower() in preferred_term.lower()
            for excl in explicit_exclusions):
         print(f"[validator] EXCLUDED: {snomed_id} '{preferred_term}'")
-        return None, None   # None, None = excluded entirely, not low-confidence
+        return None, None
 
-    # --- Structural penalty ---
     if concept_type == "diagnosis" and source.startswith("relationship_"):
         score += CONFIDENCE_WEIGHTS["finding_not_disorder"]
 
-    # --- Check each codelist ---
     found_in_names = []
-    is_nhsd = False
-    is_trud = False
-    is_qof = False
+    is_nhsd = is_trud = is_qof = False
 
-    tools = client.get_tools()
-    lookup_tool = next(
-        (t for t in tools if t.name == "lookup_code_in_codelists"), None
-    )
+    # only hit MCP if client available
+    lookup_tool = relations_tool = None
+    if client:
+        tools          = await client.get_tools()
+        lookup_tool    = next((t for t in tools if t.name == "lookup_code_in_codelists"), None)
+        relations_tool = next((t for t in tools if t.name == "get_relationships"), None)
 
     for codelist in all_codelists:
         layer = codelist.get("discovery_layer", "opencodelists")
 
         if layer == "trud":
-            # TRUD: check local member set directly — no API call needed
+            members = codelist.get("members", set())
+            in_members = snomed_id in members
+            print(f"[DEBUG] candidate id : '{snomed_id}'")
+            print(f"[DEBUG] sample members: {list(members)[:3]}")
+            print(f"[DEBUG] in_members: {in_members}")
+            if in_members:
+                found_in_names.append(codelist["name"])
+                is_trud = True
+                if "nhs digital" in codelist.get("organisation", "").lower():
+                    is_nhsd = True
+
+        elif layer == "opencodelists":
             members = codelist.get("members", set())
             if snomed_id in members:
                 found_in_names.append(codelist["name"])
-                is_trud = True
-                org = codelist.get("organisation", "").lower()
-                if "nhs digital" in org:
-                    is_nhsd = True
-
-        elif layer == "opencodelists" and lookup_tool:
-            result = await lookup_tool.ainvoke({
-                "snomed_id": snomed_id,
-                "condition": codelist.get("name", primary_condition)
-            })
-            if result.get("found"):
-                found_in_names.append(codelist["name"])
-                
                 org  = codelist.get("organisation", "").lower()
                 name = codelist.get("name", "").lower()
-
-                # Check: is this an NHS Digital curated refset?
                 if any(t in org for t in ["nhsd", "nhs digital", "primary care domain"]):
                     is_nhsd = True
-
-                # ← NEW: Check if this is a QOF Business Rules codelist
                 if any(t in name for t in ["qof", "quality and outcomes",
                                             "business rules", "register"]):
-                    is_qof = True   # ← needs to be declared at top of function
+                    is_qof = True
 
-
-    # --- Apply codelist scores ---
     found_count = len(found_in_names)
 
-    if is_nhsd:
-        score += CONFIDENCE_WEIGHTS["found_in_nhsd_refset"]
-    elif is_qof:                                              # ← ADD THIS BLOCK
+    if is_qof:
         score += CONFIDENCE_WEIGHTS["found_in_qof_register"]
+    elif is_nhsd:
+        score += CONFIDENCE_WEIGHTS["found_in_nhsd_refset"]
     elif is_trud:
         score += CONFIDENCE_WEIGHTS["found_in_trud_refset"]
-    elif found_count >= 2:
-        score += CONFIDENCE_WEIGHTS["found_in_multiple_codelists"]
-    elif found_count == 1:
+    elif found_count >= 1:
         score += CONFIDENCE_WEIGHTS["found_in_one_codelist"]
 
-    # --- Clinical course check ---
-    if expected_course != "either":
-        tools = client.get_tools()
-        relations_tool = next(
-            (t for t in tools if t.name == "get_relationships"), None
-        )
-        if relations_tool:
-            try:
-                course_result = await relations_tool.ainvoke({
-                    "concept_id": snomed_id,
-                    "relationship_type": "clinical_course"
-                })
-                for rel in course_result:
-                    target = rel.get("target_term", "").lower()
-                    if "chronic" in target:
-                        actual = "chronic"
-                    elif "acute" in target:
-                        actual = "acute"
-                    else:
-                        continue
+    # ── Multi-codelist bonus (independent of type) ──
+    if found_count >= 3:
+        score += 0.20
+    elif found_count == 2:
+        score += 0.10
+
+    # ── Semantic match to primary_condition ──
+    term_words      = set(preferred_term.lower().split())
+    condition_words = set(primary_condition.lower().split())
+    overlap = len(term_words & condition_words) / max(len(condition_words), 1)
+    if overlap >= 0.8:
+        score += 0.20
+    elif overlap >= 0.5:
+        score += 0.10
+    
+    
+    '''
+    if expected_course != "either" and relations_tool:
+        try:
+            course_result = await relations_tool.ainvoke({
+                "concept_id":        snomed_id,
+                "relationship_type": "clinical_course"
+            })
+            for rel in course_result:
+                target = rel.get("target_term", "").lower()
+                actual = ("chronic" if "chronic" in target
+                          else "acute" if "acute" in target
+                          else None)
+                if actual:
                     if actual == expected_course:
                         score += CONFIDENCE_WEIGHTS["clinical_course_matches"]
                     else:
                         score += CONFIDENCE_WEIGHTS["clinical_course_mismatch"]
-                        print(f"[validator] COURSE MISMATCH: {snomed_id}")
-            except Exception:
-                pass
+        except Exception:
+            pass
+'''
+    if expected_course != "either":
+        term_lower = preferred_term.lower()
+        actual_course = (
+            "chronic" if any(w in term_lower for w in
+                            ["chronic", "permanent", "persistent",
+                            "paroxysmal", "controlled", "stable"])
+            else "acute"  if any(w in term_lower for w in
+                            ["acute", "decompensated", "emergency", "crisis"])
+            else None
+        )
+        if actual_course:
+            if actual_course == expected_course:
+                score += CONFIDENCE_WEIGHTS["clinical_course_matches"]
+            else:
+                score += CONFIDENCE_WEIGHTS["clinical_course_mismatch"]
 
-    # --- Final score ---
     confidence = min(max(round(score, 2), 0.0), 1.0)
 
     if confidence < TIER_THRESHOLDS["exclude"]:
         print(f"[validator] LOW CONFIDENCE ({confidence:.2f}): "
               f"{snomed_id} '{preferred_term}'")
-        return None, snomed_id  # flag for re-search
+        return None, snomed_id
 
     validated = {
-        "snomed_id":            snomed_id,
-        "preferred_term":       preferred_term,
-        "confidence_score":     confidence,
-        "opencodelists_match":  found_count > 0,
-        "qof_match":            is_nhsd,
-        "semantic_score":       0.0,
-        "found_in_codelists":   found_in_names,
-        "is_nhsd_refset":       is_nhsd,
-        "found_count":          found_count
+        "snomed_id":           snomed_id,
+        "preferred_term":      preferred_term,
+        "confidence_score":    confidence,
+        "opencodelists_match": found_count > 0,
+        "qof_match":           is_qof,       # ← fixed
+        "semantic_score":      0.0,
+        "found_in_codelists":  found_in_names,
+        "is_nhsd_refset":      is_nhsd,
+        "found_count":         found_count
     }
 
     tier = ("tier_1" if confidence >= 0.70 else
             "tier_2" if confidence >= 0.45 else "tier_3")
     print(f"[validator] {tier.upper()} ({confidence:.2f}): "
-          f"{snomed_id} '{preferred_term}' "
-          f"[found in {found_count} codelists]")
+          f"{snomed_id} '{preferred_term}' [found in {found_count} codelists]")
 
     return validated, None
-
 
 # ===================================================================
 # MAIN NODE FUNCTION
@@ -318,24 +320,16 @@ def _infer_expected_course(research_question: str) -> str:
 
 
 async def validator_node(state: NICEState) -> dict:
-    """
-    Node 3: Three-layer dynamic codelist discovery + universal scoring.
 
-    Layer 1: OpenCodelists API     — fully automatic
-    Layer 2: TRUD refset index     — semi-automatic (index maintained manually)
-    Layer 3: Human review flag     — catches everything else
-    """
     candidate_codes     = state.get("candidate_codes", [])
     primary_condition   = state.get("primary_condition", "")
     research_question   = state.get("research_question", "")
-    suggested_sources   = state.get("suggested_validation_sources", [])
     explicit_exclusions = state.get("explicit_exclusions", [])
     concept_type        = state.get("concept_type", "diagnosis")
     search_terms        = state.get("search_terms", [])
     iteration_count     = state.get("iteration_count", 0)
-
-    expected_course = _infer_expected_course(research_question)
-    extra_state_updates = {}
+    
+    expected_course     = _infer_expected_course(research_question)
 
     validated_codes:    list[ValidatedCode] = []
     low_confidence_ids: list[str]           = []
@@ -346,81 +340,35 @@ async def validator_node(state: NICEState) -> dict:
     print(f"[validator] Exp. course: {expected_course}")
     print(f"[validator] Iteration  : {iteration_count}")
 
-    try:
-        async with MultiServerMCPClient({
-            "opencodelists": {
-                "command": "python",
-                "args": ["tools/opencodelists_mcp.py"],
-                "transport": "stdio"
-            },
-            "snomed": {
-                "command": "python",
-                "args": ["tools/snomed_mcp.py"],
-                "transport": "stdio"
-            },
-            "trud": {
-                "command": "python",
-                "args": ["tools/trud_mcp.py"],
-                "transport": "stdio"
-            }
-        }) as client:
+    # ── Layer 1: OpenCodelists (direct HTTP, no MCP) ────────────────
+    l1_codelists = _layer1_opencodelists(primary_condition, search_terms)
 
-            # ── Layer 1: OpenCodelists ──────────────────────────────
-            l1_codelists = await _layer1_opencodelists(
-                client, suggested_sources, primary_condition
-            )
+    # ── Layer 2: TRUD (local dict, no MCP) ─────────────────────────
+    l2_codelists = _layer2_trud(primary_condition, search_terms)
 
-            # ── Layer 2: TRUD ───────────────────────────────────────
-            l2_codelists = await _layer2_trud(
-                client, primary_condition, search_terms
-            )
+    all_codelists = l1_codelists + l2_codelists
 
-            all_codelists = l1_codelists + l2_codelists
+    # ── Layer 3: Flag if nothing found ──────────────────────────────
+    extra_state_updates = _layer3_flag_if_empty(all_codelists, primary_condition)
 
-            # ── Layer 3: Flag if nothing found ─────────────────────
-            extra_state_updates = _layer3_flag_if_empty(
-                all_codelists, primary_condition
-            )
+    # ── Validate each candidate ─────────────────────────────────────
+    for candidate in candidate_codes:
+        validated, low_conf_id = await _validate_single_code(
+            candidate=candidate,
+            all_codelists=all_codelists,
+            primary_condition=primary_condition,
+            expected_course=expected_course,
+            concept_type=concept_type,
+            explicit_exclusions=explicit_exclusions,
+            client=None   # SNOMED relations disabled until API key arrives
+        )
+        if validated:
+            validated_codes.append(validated)
+        elif low_conf_id:
+            low_confidence_ids.append(low_conf_id)
 
-            # ── Validate each candidate ────────────────────────────
-            for candidate in candidate_codes:
-                validated, low_conf_id = await _validate_single_code(
-                    client=client,
-                    candidate=candidate,
-                    all_codelists=all_codelists,
-                    primary_condition=primary_condition,
-                    expected_course=expected_course,
-                    concept_type=concept_type,
-                    explicit_exclusions=explicit_exclusions
-                )
-                if validated:
-                    validated_codes.append(validated)
-                elif low_conf_id:
-                    low_confidence_ids.append(low_conf_id)
-                # None, None = hard excluded — silently dropped
-
-    except Exception as e:
-        print(f"[validator] MCP client error: {e}")
-        validated_codes = [
-            {
-                "snomed_id":           c.get("snomed_id", ""),
-                "preferred_term":      c.get("preferred_term", ""),
-                "confidence_score":    0.0,
-                "opencodelists_match": False,
-                "qof_match":           False,
-                "semantic_score":      0.0,
-                "found_in_codelists":  [],
-                "is_nhsd_refset":      False,
-                "found_count":         0
-            }
-            for c in candidate_codes
-        ]
-
-    # ── Routing ────────────────────────────────────────────────────
-    if low_confidence_ids and iteration_count < 3:
-        routing = "loop_back"
-    else:
-        routing = "proceed"
+    # ── Routing ─────────────────────────────────────────────────────
+    routing = "loop_back" if low_confidence_ids and iteration_count < 3 else "proceed"
 
     t1 = sum(1 for v in validated_codes if v["confidence_score"] >= 0.70)
     t2 = sum(1 for v in validated_codes if 0.45 <= v["confidence_score"] < 0.70)
@@ -428,13 +376,12 @@ async def validator_node(state: NICEState) -> dict:
 
     print(f"\n[validator] ── Complete ──")
     print(f"[validator] Routing : {routing}")
-    print(f"[validator] Tiers   : T1={t1}  T2={t2}  T3={t3}  "
-          f"Low/excl={len(low_confidence_ids)}")
+    print(f"[validator] Tiers   : T1={t1}  T2={t2}  T3={t3}  Low/excl={len(low_confidence_ids)}")
 
     return {
         "validated_codes":      validated_codes,
         "low_confidence_codes": low_confidence_ids,
         "iteration_count":      iteration_count + 1,
         "routing_decision":     routing,
-        **extra_state_updates   # merges human_review_flag if Layer 3 fired
+        **extra_state_updates
     }

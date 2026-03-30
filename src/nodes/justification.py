@@ -18,7 +18,7 @@ from src.state import NICEState, Justification, ValidatedCode
 # -------------------------------------------------------------------
 # LLM — GPT-4o for high-quality, clinically accurate justification
 # -------------------------------------------------------------------
-llm = ChatOpenAI(model="gpt-4o", temperature=0)
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=1000)
 
 # -------------------------------------------------------------------
 # System prompt — fully generic, no condition-specific knowledge

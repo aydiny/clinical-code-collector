@@ -11,40 +11,43 @@ Last updated: March 2026
 """
 
 TRUD_REFSET_INDEX = {
-    # Cardiovascular
-    "heart failure":                        "999002401000000105",  # HF_COD
-    "reduced ejection fraction":            "991411000000109",     # REDEJCFRAC_COD
-    "heart failure reduced ejection":       "991411000000109",     # REDEJCFRAC_COD
-    "hfref":                                "991411000000109",     # REDEJCFRAC_COD
-    "atrial fibrillation":                  "999002271000000101",  # AF_COD
-    "coronary heart disease":               "999002301000000104",  # CHD_COD
-    "hypertension":                         "999002461000000107",  # HYP_COD
-    "peripheral arterial disease":          "999002491000000103",  # PAD_COD
-    "stroke tia":                           "999002681000000101",  # STIA_COD
-    # Respiratory
-    "copd":                                 "999002371000000107",  # COPD_COD
-    "asthma":                               "999002321000000101",  # AST_COD
-    # Metabolic
-    "type 2 diabetes":                      "999004691000000108",  # DM_COD
-    "diabetes":                             "999004691000000108",  # DM_COD
-    "obesity":                              "999002541000000102",  # OB_COD
-    # Mental health
-    "depression":                           "999002431000000101",  # DEP_COD
-    "dementia":                             "999002401000000104",  # DEM_COD
-    "schizophrenia psychosis":              "999002621000000100",  # MH_COD
-    # Renal
-    "chronic kidney disease":               "999002351000000101",  # CKD_COD
-    "ckd":                                  "999002351000000101",  # CKD_COD
-    # Cancer
-    "cancer":                               "999002341000000103",  # CAN_COD
-    # Musculoskeletal
-    "osteoporosis":                         "999002561000000103",  # OST_COD
-    "rheumatoid arthritis":                 "999002591000000102",  # RA_COD
-    # Other
-    "epilepsy":                             "999002451000000109",  # EP_COD
-    "hypothyroidism":                       "999002511000000107",  # THY_COD
-    "learning disability":                  "999002521000000101",  # LD_COD
-    "palliative care":                      "999002571000000109",  # PC_COD
+    # ── Cardiovascular ──────────────────────────────────────────────
+    "heart failure":                    "84114007",   # HF_COD
+    "cardiac failure":                  "84114007",   # HF_COD
+    "reduced ejection fraction":        "703272007",  # REDEJFRAC_COD
+    "heart failure reduced ejection":   "703272007",  # REDEJFRAC_COD
+    "hfref":                            "703272007",  # REDEJFRAC_COD
+    "lvsd":                             "703272007",  # REDEJFRAC_COD
+    "atrial fibrillation":              "49436004",   # AFIB_COD  ← verified [web:34]
+    "af register":                      "49436004",   # AFIB_COD
+    "atrial flutter":                   "49436004",   # AFIB_COD
+
+    # ── Metabolic ───────────────────────────────────────────────────
+    "diabetes mellitus":                "44054006",   # DM_COD  ← verified [web:35]
+    "type 2 diabetes":                  "44054006",   # DM_COD
+    "t2dm":                             "44054006",   # DM_COD
+
+    # ── NOT YET IN trud_data.py — keys provided for future expansion ─
+    # Add these refsets to trud_data.py before enabling:
+    # "coronary heart disease":         "53741008",   # CHD_COD
+    # "hypertension":                   "38341003",   # HYP_COD
+    # "copd":                           "13645005",   # COPD_COD
+    # "asthma":                         "195967001",  # AST_COD
+    # "chronic kidney disease":         "709044004",  # CKD_COD
+    # "ckd":                            "709044004",  # CKD_COD
+    # "osteoporosis":                   "64859006",   # OST_COD
+    # "rheumatoid arthritis":           "69896004",   # RA_COD
+    # "epilepsy":                       "84757009",   # EP_COD
+    # "hypothyroidism":                 "40930008",   # THY_COD
+    # "depression":                     "35489007",   # DEP_COD
+    # "dementia":                       "52448006",   # DEM_COD
+    # "obesity":                        "414916001",  # OB_COD
+    # "cancer":                         "363346000",  # CAN_COD
+    # "stroke tia":                     "230690007",  # STIA_COD
+    # "palliative care":                "103693007",  # PC_COD
+    # "learning disability":            "91138005",   # LD_COD
+    # "peripheral arterial disease":    "400047006",  # PAD_COD
+    # "schizophrenia":                  "58214004",   # MH_COD
 }
 
 

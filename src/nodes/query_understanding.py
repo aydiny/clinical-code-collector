@@ -14,6 +14,10 @@ import json
 import re
 import sys
 import os
+import httpx
+from dotenv import load_dotenv
+load_dotenv()   
+
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
 
 from src.rag.retriever import get_retriever
@@ -21,11 +25,12 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from src.state import NICEState
+from src.utils.fhir_client import _get_headers, CONCEPT_TYPE_ROOTS, FHIR_BASE
 
 # -------------------------------------------------------------------
 # LLM — GPT-4o for clinical reasoning quality
 # -------------------------------------------------------------------
-llm = ChatOpenAI(model="gpt-4o", temperature=0)
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=1000)
 
 # -------------------------------------------------------------------
 # System Prompt — fully generic, no condition-specific knowledge
@@ -135,8 +140,6 @@ IMPORTANT RULES:
    block above — never invent a value outside that list
 """
 
-
-
 def _parse_llm_response(content: str) -> dict:
     """
     Parse LLM response to JSON.
@@ -225,97 +228,47 @@ async def _enrich_with_nhs_synonyms(
     initial_search_terms: list[str],
     primary_condition: str,
     explicit_exclusions: list[str],
-    concept_type: str = "clinical_finding"
+    concept_type: str = "diagnosis"
 ) -> list[str]:
-    """
-    Node 1b: Enrich search_terms with official NHS SNOMED synonyms.
-
-    Strategy:
-      1. Search SNOMED for the primary condition
-      2. For each top result, retrieve all official NHS synonym descriptions
-      3. Add synonyms not already in search_terms and not in exclusions
-
-    Non-fatal: returns initial_search_terms unchanged if API unavailable.
-    No LLM involved — pure NHS Terminology Server API calls.
-    """
     enriched = list(initial_search_terms)
-
     try:
-        async with MultiServerMCPClient({
-            "snomed": {
-                "command": "python",
-                "args": ["tools/snomed_mcp.py"],
-                "transport": "stdio"
-            }
-        }) as client:
+        headers  = _get_headers()   # reuse from snomed_search_node or inline
+        root_id  = CONCEPT_TYPE_ROOTS.get(concept_type, "404684003")
 
-            tools = client.get_tools()
-            search_tool   = next(
-                (t for t in tools if t.name == "search_snomed"), None
-            )
-            synonyms_tool = next(
-                (t for t in tools if t.name == "get_synonyms"), None
-            )
-
-            if not search_tool or not synonyms_tool:
-                print("[query_understanding:1b] Required tools not available")
-                return enriched
-
-            # Step 1: Find concept IDs for primary condition
-            initial_results = await search_tool.ainvoke({
-                "term": primary_condition,
-                "concept_type": concept_type,
-                "max_results": 5
+        async with httpx.AsyncClient(base_url=FHIR_BASE, timeout=15.0) as client:
+            # Step 1: find top 3 concept IDs
+            resp = await client.get("/ValueSet/$expand", headers=headers, params={
+                "url":    f"http://snomed.info/sct?fhir_vs=isa/{root_id}",
+                "filter": primary_condition,
+                "count":  3
             })
+            hits = resp.json().get("expansion", {}).get("contains", [])
 
-            if not initial_results or "error" in initial_results[0]:
-                print(f"[query_understanding:1b] No SNOMED results for "
-                      f"'{primary_condition}'")
-                return enriched
-
-            # Step 2: Get all NHS-official synonyms for top 3 concepts
-            added_count = 0
-            for result in initial_results[:3]:
-                concept_id = result.get("snomed_id")
+            added = 0
+            for hit in hits:
+                concept_id = hit.get("code")
                 if not concept_id:
                     continue
 
-                result   = await synonyms_tool.ainvoke({"concept_id": concept_id})
-                synonyms = result.get("synonyms", []) if isinstance(result, dict) else []
+                # Step 2: get synonyms via CodeSystem/$lookup
+                syn_resp = await client.get("/CodeSystem/$lookup", headers=headers, params={
+                    "system":   "http://snomed.info/sct",
+                    "code":     concept_id,
+                    "property": "designation"
+                })
+                for param in syn_resp.json().get("parameter", []):
+                    if param.get("name") == "designation":
+                        parts = {p["name"]: p for p in param.get("part", [])}
+                        term  = parts.get("value", {}).get("valueString", "").strip()
+                        if term and not any(t.lower() == term.lower() for t in enriched) \
+                               and not any(e.lower() in term.lower() for e in explicit_exclusions):
+                            enriched.append(term)
+                            added += 1
 
-                for syn in synonyms:
-                    term = syn.get("term", "").strip()
-                    if not term:
-                        continue
-
-                    # Skip if already present (case-insensitive)
-                    already_present = any(
-                        t.lower() == term.lower() for t in enriched
-                    )
-                    if already_present:
-                        continue
-
-                    # Skip if matches an exclusion term
-                    is_exclusion = any(
-                        excl.lower() in term.lower()
-                        for excl in explicit_exclusions
-                    )
-                    if is_exclusion:
-                        continue
-
-                    enriched.append(term)
-                    added_count += 1
-
-            print(f"[query_understanding:1b] Added {added_count} NHS synonyms. "
-                  f"Total search terms: {len(enriched)}")
-
+        print(f"[query_understanding:1b] Added {added} NHS synonyms. Total: {len(enriched)}")
     except Exception as e:
-        # Non-fatal — log and return LLM-generated terms only
-        print(f"[query_understanding:1b] Synonym enrichment failed: {e}")
-        print("[query_understanding:1b] Falling back to LLM-generated terms")
-
+        print(f"[query_understanding:1b] Synonym enrichment failed: {e} — using LLM terms")
     return enriched
-
 
 async def query_understanding_node(state: NICEState) -> dict:
     """
@@ -436,4 +389,7 @@ All other fields: use your clinical expertise as normal.
         "human_review_flag":             False,
         "human_feedback":                None,
         "final_output":                  None,
+
+        "rag_context": guideline_context,  
+        "rag_sources": retrieved_sources,    
     }

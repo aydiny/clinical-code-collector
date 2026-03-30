@@ -10,4 +10,6 @@ tiktoken
 python-dotenv
 pypdf
 pyyaml
-fastmcp
+fastmcpstreamlit
+pandas
+uuid

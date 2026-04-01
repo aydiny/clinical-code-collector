@@ -176,8 +176,13 @@ async def _validate_single_code(
                 else: score += CONFIDENCE_WEIGHTS["clinical_course_mismatch"]
 
     elif category == "Medication" or category == "Observation":
-        # Fast-track supplementary codes! If it hits an OpenCodelist, it gets a near-perfect score.
-        score = 0.90 + (0.05 if found_count > 0 else 0.0)
+        # Fast-track supplementary codes ONLY if they hit a reference list
+        if found_count > 0:
+            score = 0.85 + (0.05 if is_nhsd or is_qof else 0.0)
+        else:
+            # If not in a codelist, it gets a low base score. 
+            # It will rely entirely on the LLM finding a quote to stay in the cohort.
+            score = 0.30
 
     confidence = min(max(round(score, 2), 0.0), 1.0)
 

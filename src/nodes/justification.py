@@ -7,6 +7,7 @@ Node 4: Justification Agent — DYNAMIC VERSION
 """
 import sys
 import os
+import json
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
 
 from langchain_openai import ChatOpenAI
@@ -22,20 +23,15 @@ llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=1000)
 # System prompt
 # -------------------------------------------------------------------
 SYSTEM_PROMPT = """
-You are a clinical informatics expert specialising in SNOMED CT and UK primary care coding. 
-Write a concise clinical justification (2-3 sentences) for why a SNOMED CT code should 
-be included in a codelist for identifying a specific patient cohort.
+You are a Clinical Auditor for NICE. You are justifying SNOMED CT codes for a research cohort.
 
-Your justification must:
-1. Explain precisely what clinical concept this SNOMED code represents (Disease, Medication, or Observation).
-2. Explain why it is relevant to the described cohort.
-3. Reference the validation sources it was found in (provided to you).
-4. Note any caveats (e.g., low confidence, supplementary use).
-
-Rules:
-- Do NOT hallucinate codelist names or refset IDs.
-- If confidence is low, explicitly state the uncertainty.
-- Write for a clinical lead reviewer, not a developer.
+GROUNDING RULES:
+1. You will be provided with RETRIEVED CHUNKS from NICE guidelines wrapped in <CHUNK> tags.
+2. For each SNOMED code, you MUST find the specific CHUNK that mentions the condition or medication.
+3. Carefully check if the retrieved chunk actually justifies the inclusion of the SNOMED code. If it does not, write "No direct guideline evidence found."
+4. If the chunk justifies the inclusion of the SNOMED code, your justification must begin with a DIRECT QUOTE from that chunk.
+5. If no chunk mentions the specific concept, write "No direct guideline evidence found."
+6. Format your response EXACTLY as a JSON object with the keys: 'justification', 'quote', 'page'.
 """
 
 TIER_THRESHOLDS = {
@@ -61,45 +57,17 @@ def _build_source_document(code: ValidatedCode) -> str:
     if is_nhsd: sources += " [NHS Digital curated refset]"
     return sources
 
-def _build_justification_prompt(
-    code: ValidatedCode,
-    research_question: str,
-    primary_condition: str,
-    relevant_guidelines: list[str],
-    rag_context: str,
-    rag_sources: list[str]
-) -> str:
-    tier = assign_tier(code.get("confidence_score", 0.0))
-    source_document = _build_source_document(code)
-    found_in = code.get("found_in_codelists", [])
-    category = code.get("category", "Diagnosis")
-
-    guideline_context = f"Relevant guidelines: {', '.join(relevant_guidelines)}" if relevant_guidelines else "No specific guidelines identified."
-    
-    rag_block = f"""
-Retrieved Guidelines:
-──────────────────────────────────────────────────────────────────────────
-{rag_context}
-──────────────────────────────────────────────────────────────────────────
-INSTRUCTION: Ground your justification in the retrieved text above where possible.
-""" if rag_context and rag_context != "[RAG retrieval unavailable]" else "⚠️ No guideline text retrieved."
-
+def _build_justification_prompt(code, research_question, rag_context):
     return f"""
-COHORT DESCRIPTION: {research_question}
-PRIMARY CONDITION: {primary_condition}
+COHORT: {research_question}
+CODE: {code['snomed_id']} ({code['preferred_term']})
 
-CODE DETAILS:
-- Category      : {category.upper()}
-- SNOMED ID     : {code['snomed_id']}
-- Preferred term: {code['preferred_term']}
-- Confidence    : {code['confidence_score']:.2f}
-- Assigned tier : {tier.upper()}
-- Validation src: {source_document}
+RETRIEVED GUIDELINE TEXT:
+{rag_context}
 
-{guideline_context}
-{rag_block}
-
-Write the justification now (2-3 sentences).
+TASK:
+Identify the specific guideline text that justifies including '{code['preferred_term']}'. 
+Return ONLY a valid JSON object with 'justification', 'quote', and 'page'.
 """
 
 async def justification_node(state: NICEState) -> dict:
@@ -130,10 +98,7 @@ async def justification_node(state: NICEState) -> dict:
         prompt = _build_justification_prompt(
             code=code,
             research_question=research_question,
-            primary_condition=primary_condition,
-            relevant_guidelines=relevant_guidelines,
             rag_context=rag_context,
-            rag_sources=rag_sources
         )
 
         messages = [
@@ -143,19 +108,43 @@ async def justification_node(state: NICEState) -> dict:
 
         try:
             response = await llm.ainvoke(messages)
-            justification_text = response.content.strip()
+            
+            # 1. Clean the response (LLMs sometimes wrap JSON in markdown blocks like ```json ... ```)
+            clean_response = response.content.strip()
+            if clean_response.startswith("```json"):
+                clean_response = clean_response[7:-3].strip()
+            elif clean_response.startswith("```"):
+                clean_response = clean_response[3:-3].strip()
+                
+            # 2. Parse the JSON
+            data = json.loads(clean_response)
+            
+            justification_text = data.get("justification", "No justification provided.")
+            evidence_quote = data.get("quote", "No direct quote found.")
+            page_info = data.get("page", "N/A")
+            
+        except json.JSONDecodeError as e:
+            # Fallback if the LLM disobeys and writes plain text instead of JSON
+            justification_text = f"[Format Error] Raw text: {response.content}"
+            evidence_quote = "N/A"
+            page_info = "N/A"
         except Exception as e:
             justification_text = f"[Justification generation failed: {e}]"
+            evidence_quote = "N/A"
+            page_info = "N/A"
 
-        source_chunk = f"Retrieved from: {'; '.join(rag_sources)}" if rag_sources else "⚠️ Clinical reasoning only"
+        # 3. Update the source chunk to point to the specific page
+        source_chunk = f"Ref: {page_info}" if page_info != "N/A" else "⚠️ Clinical reasoning only"
 
+        # 4. Append to the list (now including evidence_quote)
         justifications.append({
             "snomed_id":           snomed_id,
             "preferred_term":      preferred_term,
             "category":            category,
             "justification_text":  justification_text,
+            "evidence_quote":      evidence_quote,   # <--- THE NEW FIELD
             "source_document":     _build_source_document(code),
-            "source_chunk":        source_chunk,
+            "source_chunk":        source_chunk,     # <--- UPDATED FIELD
             "confidence_score":    confidence,
             "tier":                tier,
         })

@@ -29,7 +29,8 @@ class Justification(TypedDict):
     qof_match:           bool
     opencodelists_match: bool
     found_in_codelists:  List[str]   
-    is_nhsd_refset:      bool        
+    is_nhsd_refset:      bool
+    evidence_quote:      str
 
 class NICEState(TypedDict):
     # --- Input ---

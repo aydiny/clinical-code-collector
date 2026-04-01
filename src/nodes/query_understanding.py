@@ -318,20 +318,29 @@ async def query_understanding_node(state: NICEState) -> dict:
    # ── RAG: retrieve relevant NICE guideline chunks ──────────────
     retriever         = get_retriever(k=20)
     guideline_context = "No relevant guidelines retrieved."
-    retrieved_sources = []
 
     if retriever:
         try:
             guideline_docs = retriever.invoke(research_question)
             if guideline_docs:
-                # 1. Combine the text
-                guideline_context = "\n\n".join([d.page_content for d in guideline_docs])
+                # 1. Build Structured Context with XML tags and metadata
+                structured_context = ""
+                for i, doc in enumerate(guideline_docs):
+                    # Some loaders use 0-indexed pages, so you might need to +1 depending on your PDF loader
+                    page_num = doc.metadata.get("page", "Unknown Page")
+                    source_file = os.path.basename(str(doc.metadata.get("source", "Unknown Source")))
+                    
+                    # Wrap each chunk in an XML tag so the LLM can reference it
+                    structured_context += f"\n<CHUNK id='{i}' source='{source_file}' page='{page_num}'>\n"
+                    structured_context += doc.page_content
+                    structured_context += f"\n</CHUNK>\n"
                 
-                # 2. Safely extract the filename from the metadata
-                # PyPDFLoader puts the file path in the "source" key. We use os.path.basename to just get the filename.
+                # Assign the structured text to your context variable
+                guideline_context = structured_context
+                
+                # 2. Safely extract the filename from the metadata for tracking
                 sources_set = {os.path.basename(str(d.metadata.get("source", "Unknown"))) for d in guideline_docs}
                 
-                # --- SENIOR DEBUGGING PRINTS ---
                 print(f"\n[DEBUG RAG] 🔍 Retrieved {len(guideline_docs)} chunks.")
                 print(f"[DEBUG RAG] 📄 Sources found: {list(sources_set)}")
                 print(f"[DEBUG RAG] 📝 Top chunk preview:\n--- START PREVIEW ---\n{guideline_docs[0].page_content[:300]}...\n--- END PREVIEW ---\n")
@@ -447,5 +456,5 @@ All other fields: use your clinical expertise as normal.
         "final_output":                  None,
 
         "rag_context": guideline_context,  
-        "rag_sources": retrieved_sources,    
+        "rag_sources": list(set([os.path.basename(d.metadata.get("source", "")) for d in guideline_docs]))
     }

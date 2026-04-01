@@ -39,7 +39,7 @@ def build_graph():
     graph.add_node("snomed_search",       snomed_search_node)
     graph.add_node("validator",           validator_node)
     graph.add_node("justification",       justification_node)
-    graph.add_node("human_review",        human_review_node)
+    graph.add_node("human_review",        human_review_node) 
 
     # Entry point
     graph.set_entry_point("query_understanding")
@@ -70,34 +70,3 @@ def build_graph():
     )
 
 
-# --- Run the graph (entry point for testing) ---
-if __name__ == "__main__":
-    from dotenv import load_dotenv
-    load_dotenv()
-
-    app = build_graph()
-
-    # Test input — replace with your test case research question
-    initial_state = {
-        "research_question": (
-            "What SNOMED codes identify patients with heart failure with reduced "
-            "ejection fraction (HFrEF, LVEF < 40%) eligible for SGLT2 inhibitor "
-            "therapy in UK primary care?"
-        ),
-        "iteration_count": 0,
-        "human_review_flag": False,
-        "human_feedback": None,
-        "final_output": None
-    }
-
-    config = {"configurable": {"thread_id": "test-run-001"}}
-
-    print("=== Running NICE Clinical Code Recommendation Pipeline ===\n")
-    for step in app.stream(initial_state, config=config):
-        node_name = list(step.keys())[0]
-        print(f"✅ Completed: {node_name}")
-        print(f"   State keys updated: {list(step[node_name].keys())}\n")
-
-    print("=== Pipeline paused at human_review checkpoint ===")
-    print("Review the justifications in state, then resume with:")
-    print('   app.invoke(None, config=config)  # to approve and continue to END')

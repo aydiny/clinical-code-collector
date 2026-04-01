@@ -40,8 +40,12 @@ class NICEState(TypedDict):
     concept_type:                 str         
     snomed_top_hierarchy:         str         
     related_conditions:           List[str]
-    explicit_exclusions:          List[str]
-    relevant_guidelines:          List[str]   
+    excluded_diagnoses:           List[str]
+    excluded_medications:         List[str]
+    excluded_observations:        List[str]
+    relevant_guidelines:          List[str]
+    relevant_medications:         List[str]
+    relevant_observations:        List[str]
     suggested_validation_sources: List[str]   
     search_terms:                 List[str]
     ambiguity_notes:              str         

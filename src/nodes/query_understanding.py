@@ -89,10 +89,14 @@ Return a VALID JSON object with EXACTLY these keys:
   "related_conditions": 
       ["list of closely related conditions that may share codes"],
 
-  "explicit_exclusions": 
-      ["list of conditions/concepts that must NOT appear in the codelist,
-        each as a plain English phrase — e.g. 'acute heart failure',
-        'type 1 diabetes', 'HFpEF - preserved ejection fraction'"],
+   "excluded_diagnoses": 
+       ["list of SUBSTRINGS to filter out false-positive terminology matches (e.g., 'preserved' or 'Type 1'). DO NOT put concepts here if you need their SNOMED codes! Leave empty [] if none."],
+   
+   "excluded_medications": 
+       ["list of SUBSTRINGS to filter out false-positive medication terminology matches. CRITICAL: DO NOT list contraindicated or 'already treated' drugs here (like Dapagliflozin) because we need to fetch their codes! Leave empty [] if none."],    
+
+    "excluded_observations": 
+       ["list of SUBSTRINGS to filter out false-positive lab terminology matches. Leave empty [] if none."],
 
   "relevant_guidelines": 
       ["list of NICE/NHS guidelines likely relevant to this cohort,
@@ -107,6 +111,16 @@ Return a VALID JSON object with EXACTLY these keys:
              'HFrEF primary care register',
              'heart failure QOF' — 
         these will be passed directly to search_codelists() API"],
+
+   "relevant_medications": 
+        ["list of specific, singular generic medication names or active ingredients 
+         (e.g., 'Dapagliflozin', 'Bisoprolol'). 
+         CRITICAL: Do NOT use plural drug classes (like 'SGLT2 inhibitors' or 'Beta-blockers') 
+         because SNOMED text search will fail to find them. Leave empty [] if none."],
+   
+   "relevant_observations": 
+        ["list of relevant lab tests, imaging results, or vital signs 
+        (e.g., 'LVEF', 'HbA1c', 'Blood pressure'). Leave empty [] if none."],
 
   "search_terms": 
       ["list of 6-10 SNOMED CT search terms including:
@@ -126,18 +140,33 @@ IMPORTANT RULES:
 1. relevant_guidelines: only include guidelines you are highly confident 
    exist. Never hallucinate a NICE guideline number. If uncertain, 
    return [].
-2. explicit_exclusions: think like a clinician — what similar-sounding 
-   conditions would be wrongly captured by this search?
-3. search_terms: ALWAYS include pre-2013 legacy terms for UK EHR 
-   compatibility. UK EHRs (EMIS, SystmOne) have records coded under 
-   older terminology that predates current SNOMED standards.
-4. concept_type: if the cohort mixes diagnoses and observations 
-   (e.g. "patients with diabetes and HbA1c > 58"), use "mixed"
+2. EXCLUSIONS: think like a clinician. If the user requires a specific 
+   subtype of a disease (e.g., 'Type 2 Diabetes', 'HFrEF'), you MUST explicitly
+   exclude the other major subtypes (e.g., 'Type 1 Diabetes', 'HFpEF'). ALWAYS 
+   include standard medical acronyms. CRITICAL: NEVER include the primary target condition in this list. 
+3. search_terms:
+   STRICTLY CLINICAL DIAGNOSES and finding SYNONYMS. CRITICAL: NEVER include medication names (e.g., 'SGLT2 inhibitors'), 
+   lab test names (e.g., 'HbA1c'), or generic metadata (e.g., 'UK EHR', 'management') in this list. 
+   ALWAYS include pre-2013 legacy terms for UK EHR 
+   compatibility. 
+4. concept_type: if the cohort is primarily defined by a disease/disorder,
+   use "diagnosis". Do NOT use "demographic" just because the prompt uses 
+   the word "patients". Use "mixed" if it combines a diagnosis and a lab result.
 5. ambiguity_notes: flag if the cohort description is clinically 
    ambiguous — e.g. "heart failure" without specifying type, 
    "elderly patients" without age threshold
 6. snomed_top_hierarchy: use ONLY values from the SNOMED CT Reference
    block above — never invent a value outside that list
+
+IMPORTANT RULES:
+1. relevant_guidelines: only include guidelines you are highly confident exist. Never hallucinate a NICE guideline number. If uncertain, return [].
+2. excluded_diagnoses: think like a clinician — what similar-sounding conditions would be wrongly captured by this search? ALWAYS include standard medical acronyms (e.g., 'HFpEF') for the excluded conditions. CRITICAL: NEVER include the primary target condition or its acronyms (e.g., HFrEF) in this list. This list is STRICTLY for conditions you want to REJECT.
+3. search_terms: STRICTLY short clinical diagnoses and finding synonyms. CRITICAL: NEVER include long descriptive phrases (e.g., "Type 2 diabetes with HbA1c > 58"), medication names, lab test names, or generic metadata in this list. Keep terms short (1-4 words) and strictly focused on the core condition. You have dedicated buckets for medications and observations — use them! 
+   ALWAYS include pre-2013 legacy terms for UK EHR compatibility.
+4. concept_type: if the cohort combines multiple distinct domains (e.g., a diagnosis AND a specific lab result threshold, or a diagnosis AND a medication constraint), you MUST use "mixed". Only use "diagnosis" if the cohort is PURELY defined by a disease/disorder. Do NOT use "demographic" just because the prompt uses the word "patients".
+5. ambiguity_notes: flag if the cohort description is clinically ambiguous.
+6. snomed_top_hierarchy: use ONLY values from the SNOMED CT Reference block above.
+
 """
 
 def _parse_llm_response(content: str) -> dict:
@@ -215,7 +244,11 @@ def _validate_parsed_output(parsed: dict, research_question: str) -> dict:
         "snomed_top_hierarchy":          parsed.get("snomed_top_hierarchy",
                                                     "Clinical Finding"),
         "related_conditions":            parsed.get("related_conditions", []),
-        "explicit_exclusions":           parsed.get("explicit_exclusions", []),
+        "relevant_observations":          parsed.get("relevant_observations"),
+        "relevant_medications":          parsed.get("relevant_medications"),
+        "excluded_diagnoses":            parsed.get("excluded_diagnoses", []),
+        "excluded_medications":          parsed.get("excluded_medications", []),
+        "excluded_observations":         parsed.get("excluded_observations", []),
         "relevant_guidelines":           parsed.get("relevant_guidelines", []),
         "suggested_validation_sources":  parsed.get("suggested_validation_sources",
                                                     [primary]),
@@ -265,7 +298,7 @@ async def _enrich_with_nhs_synonyms(
                             enriched.append(term)
                             added += 1
 
-        print(f"[query_understanding:1b] Added {added} NHS synonyms. Total: {len(enriched)}")
+        print(f"[query_understanding:1b] Added {added} NHS synonyms. Total diagnosis terms: {len(enriched)}")
     except Exception as e:
         print(f"[query_understanding:1b] Synonym enrichment failed: {e} — using LLM terms")
     return enriched
@@ -283,24 +316,26 @@ async def query_understanding_node(state: NICEState) -> dict:
     research_question = state["research_question"]
 
    # ── RAG: retrieve relevant NICE guideline chunks ──────────────
-    retriever         = get_retriever(k=4)
+    retriever         = get_retriever(k=20)
     guideline_context = "No relevant guidelines retrieved."
     retrieved_sources = []
 
-    if retriever is not None:
+    if retriever:
         try:
             guideline_docs = retriever.invoke(research_question)
             if guideline_docs:
-                guideline_context = "\n\n".join([
-                    f"[Source: {doc.metadata.get('display_name', 'Unknown')} "
-                    f"p.{doc.metadata.get('page', '?')}]\n{doc.page_content}"
-                    for doc in guideline_docs
-                ])
-                retrieved_sources = list(dict.fromkeys([
-                    doc.metadata.get("display_name", "Unknown")
-                    for doc in guideline_docs
-                ]))
-                print(f"[query_understanding] RAG retrieved from: {retrieved_sources}")
+                # 1. Combine the text
+                guideline_context = "\n\n".join([d.page_content for d in guideline_docs])
+                
+                # 2. Safely extract the filename from the metadata
+                # PyPDFLoader puts the file path in the "source" key. We use os.path.basename to just get the filename.
+                sources_set = {os.path.basename(str(d.metadata.get("source", "Unknown"))) for d in guideline_docs}
+                
+                # --- SENIOR DEBUGGING PRINTS ---
+                print(f"\n[DEBUG RAG] 🔍 Retrieved {len(guideline_docs)} chunks.")
+                print(f"[DEBUG RAG] 📄 Sources found: {list(sources_set)}")
+                print(f"[DEBUG RAG] 📝 Top chunk preview:\n--- START PREVIEW ---\n{guideline_docs[0].page_content[:300]}...\n--- END PREVIEW ---\n")
+            # -------------------------------
         except Exception as e:
             print(f"[query_understanding] RAG retrieval failed: {e}")
     else:
@@ -323,8 +358,9 @@ INSTRUCTIONS FOR GROUNDED FIELDS:
   Use the exact source name shown in brackets e.g. "NICE NG106 — Chronic Heart Failure"
   If nothing relevant was retrieved, return [].
 - explicit_exclusions: derive from the retrieved guidance above where possible.
-  If retrieved text does not cover exclusions, use clinical reasoning
-  but mark each exclusion with "(clinical reasoning)" suffix.
+  If the general concept (e.g., "preserved ejection fraction") is mentioned in the text, 
+  you do NOT need the clinical reasoning tag. Only append "(clinical reasoning)" 
+  if you are inferring the exclusion without any text support.
 
 All other fields: use your clinical expertise as normal.
         """)
@@ -345,12 +381,21 @@ All other fields: use your clinical expertise as normal.
           f"{cleaned['snomed_top_hierarchy']}")
     print(f"[query_understanding] Guidelines found   : "
           f"{cleaned['relevant_guidelines'] or 'None'}")
-    print(f"[query_understanding] Exclusions         : "
-          f"{cleaned['explicit_exclusions']}")
+    print(f"[query_understanding] Exclusions - diagnosis          : "
+          f"{cleaned['excluded_diagnoses']}")
+    print(f"[query_understanding] Exclusions - medications         : "
+          f"{cleaned['excluded_medications']}")
+    print(f"[query_understanding] Exclusions - observations         : "
+          f"{cleaned['excluded_observations']}")
     print(f"[query_understanding] Validation sources : "
           f"{cleaned['suggested_validation_sources']}")
     print(f"[query_understanding] Search terms (LLM) : "
           f"{cleaned['search_terms']}")
+    print(f"[query_understanding] relevant medications : "
+          f"{cleaned['relevant_medications']}")
+    print(f"[query_understanding] relevant observations : "
+          f"{cleaned['relevant_observations']}")
+    
 
     if cleaned["ambiguity_notes"]:
         print(f"[query_understanding] ⚠️  AMBIGUITY: "
@@ -360,15 +405,22 @@ All other fields: use your clinical expertise as normal.
     # NODE 1b: NHS Synonym Enrichment
     # ------------------------------------------------------------------
     print("[query_understanding:1b] Enriching with NHS synonyms...")
+
+    all_exclusions = (
+        cleaned["excluded_diagnoses"] + 
+        cleaned["excluded_medications"] + 
+        cleaned["excluded_observations"]
+    )
+
     enriched_terms = await _enrich_with_nhs_synonyms(
         initial_search_terms=cleaned["search_terms"],
         primary_condition=cleaned["primary_condition"],
-        explicit_exclusions=cleaned["explicit_exclusions"],
+        explicit_exclusions=all_exclusions,
         concept_type=cleaned["concept_type"]
     )
 
     print(f"\n[query_understanding] ── Complete ──")
-    print(f"[query_understanding] Final search terms : {len(enriched_terms)}")
+    print(f"[query_understanding] Final search terms : {len(enriched_terms +  cleaned["relevant_medications"]+ cleaned["relevant_observations"])}")
 
     return {
         # Core clinical reasoning outputs
@@ -376,7 +428,11 @@ All other fields: use your clinical expertise as normal.
         "concept_type":                  cleaned["concept_type"],
         "snomed_top_hierarchy":          cleaned["snomed_top_hierarchy"],
         "related_conditions":            cleaned["related_conditions"],
-        "explicit_exclusions":           cleaned["explicit_exclusions"],
+        "excluded_diagnoses":            cleaned["excluded_diagnoses"],
+        "excluded_medications":          cleaned["excluded_medications"],
+        "excluded_observations":         cleaned["excluded_observations"],
+        "relevant_medications":          cleaned["relevant_medications"],
+        "relevant_observations":         cleaned["relevant_observations"],
         "relevant_guidelines":           cleaned["relevant_guidelines"],
         "suggested_validation_sources":  cleaned["suggested_validation_sources"],
         "ambiguity_notes":               cleaned["ambiguity_notes"],

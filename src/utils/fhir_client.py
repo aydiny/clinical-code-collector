@@ -9,7 +9,7 @@ MAX_RESULTS_PER_TERM = 15
 MAX_DESCENDANTS      = 50
 
 CONCEPT_TYPE_ROOTS = {
-    "diagnosis":   "64572001",
+    "Clinical":   "64572001",
     "finding":     "404684003",
     "observation": "404684003",
     "procedure":   "71388002",

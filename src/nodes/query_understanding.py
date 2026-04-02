@@ -23,7 +23,6 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
 from src.rag.retriever import get_retriever
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_mcp_adapters.client import MultiServerMCPClient
 from src.state import NICEState
 from src.utils.fhir_client import _get_headers, CONCEPT_TYPE_ROOTS, FHIR_BASE
 

@@ -3,9 +3,19 @@ Shared retriever — used by Node 1 and Node 4.
 Built once at import time, reused across pipeline runs.
 """
 from pathlib import Path
+import os
 
-# CHANGED 1: Updated to point to the new local database folder we just built
-VECTORSTORE = "data/vectorstore/methodology_db"
+# 1. Get the absolute path to the directory where THIS file is located
+# 2. Go up enough levels to hit the project root (where the 'data' folder lives)
+# If this file is in src/nodes/, we go up 2 levels.
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent 
+
+# 3. Join it to the database folder
+VECTORSTORE = os.path.join(ROOT_DIR, "data", "vectorstore", "methodology_db")
+
+# Add a quick print for the Render logs so you can see exactly where it's looking
+print(f"--- DEBUG: Looking for VectorDB at: {VECTORSTORE}")
+print(f"--- DEBUG: Does path exist? {os.path.exists(VECTORSTORE)}")
 
 _retriever = None  # singleton — load once per process
 

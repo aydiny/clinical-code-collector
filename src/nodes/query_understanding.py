@@ -317,7 +317,7 @@ async def query_understanding_node(state: NICEState) -> dict:
    # ── RAG: retrieve relevant NICE guideline chunks ──────────────
     retriever         = get_retriever(k=20)
     guideline_context = "No relevant guidelines retrieved."
-
+    guideline_docs = []
     if retriever:
         try:
             guideline_docs = retriever.invoke(research_question)

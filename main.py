@@ -7,13 +7,18 @@ from src.state import NICEState
 from src.graph import build_graph
 import json
 
+# 1. Load environment variables first!
+load_dotenv()
+
+# 2. 🚀 EXPOSE THE GRAPH GLOBALLY SO STREAMLIT CAN IMPORT IT
+app = build_graph()
+
 # Dummy human review node (since we haven't built the real UI yet)
 async def human_review_node(state: NICEState) -> dict:
     print("\n[human_review] 👤 Processing human feedback...")
     return {"human_review_flag": False}
 
 async def main():
-    load_dotenv()
     print("🏥 Starting NICE Clinical Cohort Pipeline...")
     
     # 1. Define the user's research question
@@ -22,10 +27,7 @@ async def main():
         "(HFrEF) suitable for SGLT2 inhibitor therapy review in primary care"
     )
     
-    # 2. Build the LangGraph app
-    app = build_graph()
-    
-    # 3. Initialize the starting state
+    # 2. Initialize the starting state
     initial_state = {
         "research_question": research_question,
         "iteration_count": 0
@@ -38,12 +40,12 @@ async def main():
     print("🚀 RUNNING NICE CLINICAL PIPELINE (NODES 1 → 4)")
     print("=======================================================\n")
 
-    # 4. Run the graph up to the breakpoint
+    # 3. Run the graph up to the breakpoint (Using the globally defined 'app')
     async for event in app.astream(initial_state, config=config):
         for node_name, state_update in event.items():
             print(f"✅ Completed Node: {node_name}")
 
-    # 5. Inspect the paused state
+    # 4. Inspect the paused state
     print("\n=======================================================")
     print("⏸️  PIPELINE PAUSED AT HUMAN REVIEW CHECKPOINT")
     print("=======================================================\n")
@@ -54,11 +56,11 @@ async def main():
     print(f"Generated {len(justifications)} Justifications. Here are the top 3:")
     for j in justifications[:3]:
         icon = "💊" if j.get("category") == "Medication" else "🔬" if j.get("category") == "Observation" else "🩺"
-        print(f"\n{icon} [{j['tier'].upper()}] {j['snomed_id']} - {j['preferred_term']}")
-        print(f"   Reason: {j['justification_text']}")
-        print(f"   Source: {j['source_chunk']}")
+        print(f"\n{icon} [{j.get('tier', 'Unknown').upper()}] {j.get('snomed_id', '')} - {j.get('preferred_term', '')}")
+        print(f"   Reason: {j.get('justification_text', '')}")
+        print(f"   Source: {j.get('source_chunk', '')}")
 
-   # 6. Simulate Human Approval and finish
+   # 5. Simulate Human Approval and finish
     print("\n" + "="*55)
     print("🤖 SIMULATING HUMAN APPROVAL & RESUMING PIPELINE")
     print("="*55 + "\n")
@@ -75,19 +77,19 @@ async def main():
     final_state = app.get_state(config).values
     all_justifications = final_state.get("justifications", [])
 
-    # 7. View the Justification Texts
+    # 6. View the Justification Texts
     print("\n" + "="*55)
     print(f"📄 FULL REPORT: {len(all_justifications)} CODES JUSTIFIED")
     print("="*55)
     
     for j in all_justifications:
         icon = "🩺" if j.get("category") == "Diagnosis" else "💊"
-        print(f"\n{icon} {j['snomed_id']} | {j['preferred_term']}")
-        print(f"   Tier: {j['tier'].upper()}")
-        print(f"   Justification: {j['justification_text']}")
+        print(f"\n{icon} {j.get('snomed_id', '')} | {j.get('preferred_term', '')}")
+        print(f"   Tier: {j.get('tier', 'Unknown').upper()}")
+        print(f"   Justification: {j.get('justification_text', '')}")
         print(f"   Evidence: {j.get('source_chunk', 'N/A')}")
 
-    # 8. Save to JSON
+    # 7. Save to JSON
     with open("heart_failure_justifications.json", "w") as f:
         json.dump(all_justifications, f, indent=4)
 

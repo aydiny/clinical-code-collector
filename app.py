@@ -1,3 +1,5 @@
+import asyncio
+from main import app as clinical_graph # compiled LangGraph
 import streamlit as st
 import pandas as pd
 import uuid
@@ -148,12 +150,20 @@ def render_query_summary(state):
             st.markdown("**Related conditions:**")
             for c in state["related_conditions"]:
                 st.markdown(f"- {c}")
+            for c in state["relevant_medications"]:
+                st.markdown(f"- {c}")
+            for c in state["relevant_observations"]:
+                st.markdown(f"- {c}")
         with col2:
             st.markdown("**Relevant guidelines:**")
             for g in state["relevant_guidelines"]:
                 st.markdown(f"- {g}")
             st.markdown("**Explicit exclusions:**")
-            for e in state["explicit_exclusions"]:
+            for e in state["excluded_diagnoses"]:
+                st.markdown(f"- {e}")
+            for e in state["excluded_medications"]:
+                st.markdown(f"- {e}")
+            for e in state["excluded_observations"]:
                 st.markdown(f"- {e}")
         if state.get("ambiguity_notes"):
             st.markdown(
@@ -162,6 +172,7 @@ def render_query_summary(state):
             )
         st.markdown("**Expanded search terms used:**")
         st.markdown(", ".join(state["search_terms"]))
+
 
 def render_metrics(state):
     st.markdown('<p class="section-label">Summary</p>', unsafe_allow_html=True)
@@ -254,6 +265,15 @@ def render_code_cards(state):
                 unsafe_allow_html=True
             )
             st.markdown(f"{j['justification_text']}")
+            
+            # Show the exact quote and the page reference
+            quote = j.get("evidence_quote", "")
+            page_ref = j.get("source_chunk", "N/A")
+            
+            if quote and quote not in ["N/A", "No quote found"]:
+                st.markdown(f"> *\"{quote}\"*")
+                st.markdown(f'<div style="font-size:12px;color:#0C447C;font-weight:bold;">Location: {page_ref}</div>', unsafe_allow_html=True)
+
             st.markdown(f'<div style="font-size:12px;color:#0C447C;margin-top:4px">Source: {j["source_document"]}</div>', unsafe_allow_html=True)
         with col_actions:
             if current in ("accepted", "rejected", "skipped"):
@@ -406,11 +426,28 @@ def main():
         st.session_state.submitted = False
         st.session_state.session_id = str(uuid.uuid4())
         st.session_state.last_query = query
-        if USE_DUMMY_DATA:
-            if query_has_results(query):
-                st.session_state.state = DUMMY_STATE
-                st.session_state.no_results = False
-            else:
+        
+        # --- THE REAL LANGGRAPH PIPELINE ---
+        with st.spinner("Running clinical AI pipeline... (This may take 30-60 seconds)"):
+            try:
+                # 1. Feed the text input to your LangGraph state
+                initial_state = {"research_question": query}
+                
+                thread_config = {"configurable": {"thread_id": st.session_state.session_id}}
+
+                # 2. Safely run the async graph inside Streamlit using asyncio
+                final_state = asyncio.run(clinical_graph.ainvoke(initial_state, config=thread_config))
+                
+                # 3. Check if codes were actually found
+                if final_state.get("justifications") and len(final_state["justifications"]) > 0:
+                    st.session_state.state = final_state
+                    st.session_state.no_results = False
+                else:
+                    st.session_state.state = None
+                    st.session_state.no_results = True
+                    
+            except Exception as e:
+                st.error(f"Pipeline encountered an error: {str(e)}")
                 st.session_state.state = None
                 st.session_state.no_results = True
 

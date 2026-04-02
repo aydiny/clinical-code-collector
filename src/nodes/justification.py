@@ -94,6 +94,10 @@ async def justification_node(state: NICEState) -> dict:
         confidence     = code.get("confidence_score", 0.0)
         tier           = assign_tier(confidence)
         category       = code.get("category", "Diagnosis")
+        found_count    = code.get("found_count", 0)
+        found_in_names = code.get("found_in_codelists", [])
+        is_nhsd        = code.get("is_nhsd_refset", False)
+        is_qof         = code.get("qof_match", False)
 
         prompt = _build_justification_prompt(
             code=code,
@@ -147,6 +151,11 @@ async def justification_node(state: NICEState) -> dict:
             "source_chunk":        source_chunk,     # <--- UPDATED FIELD
             "confidence_score":    confidence,
             "tier":                tier,
+            "qof_match":           is_qof,
+            "opencodelists_match": found_count > 0,
+            "found_in_codelists":  found_in_names,
+            "is_nhsd_refset":      is_nhsd,
+            "found_count":         found_count,
         })
 
         icon = "💊" if category == "Medication" else "🔬" if category == "Observation" else "🩺"
@@ -156,3 +165,5 @@ async def justification_node(state: NICEState) -> dict:
         "justifications": justifications,
         "human_review_flag": any(j.get("tier") in ("tier_2", "tier_3") for j in justifications)
     }
+
+

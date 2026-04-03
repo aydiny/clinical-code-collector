@@ -30,8 +30,14 @@ GROUNDING RULES:
 2. For each SNOMED code, you MUST find the specific CHUNK that mentions the condition or medication.
 3. Carefully check if the retrieved chunk actually justifies the inclusion of the SNOMED code. If it does not, write "No direct guideline evidence found."
 4. If the chunk justifies the inclusion of the SNOMED code, your justification must begin with a DIRECT QUOTE from that chunk.
-5. If no chunk mentions the specific concept, write "No direct guideline evidence found."
-6. Format your response EXACTLY as a JSON object with the keys: 'justification', 'quote', 'page'.
+
+
+JSON OUTPUT STRUCTURE:
+You must format your response EXACTLY as a JSON object with the following keys:
+- 'justification': Your clinical reasoning. If no chunk mentions it, write "No direct guideline evidence found."
+- 'quote': The direct quote from the text.
+- 'page': The exact page number from the <CHUNK> tag's 'page' attribute. (mark "unknown" if you do not have this).
+- 'source_file': The exact filename from the <CHUNK> tag's 'source' attribute. (Leave blank if no evidence found).
 """
 
 TIER_THRESHOLDS = {
@@ -126,16 +132,19 @@ async def justification_node(state: NICEState) -> dict:
             justification_text = data.get("justification", "No justification provided.")
             evidence_quote = data.get("quote", "No direct quote found.")
             page_info = data.get("page", "N/A")
+            source_file = data.get("source_file", "No direct quote found.")
             
         except json.JSONDecodeError as e:
             # Fallback if the LLM disobeys and writes plain text instead of JSON
             justification_text = f"[Format Error] Raw text: {response.content}"
             evidence_quote = "N/A"
             page_info = "N/A"
+            source_file = "N/A"  # <-- ADDED
         except Exception as e:
             justification_text = f"[Justification generation failed: {e}]"
             evidence_quote = "N/A"
             page_info = "N/A"
+            source_file = "N/A"  # <-- ADDED
 
         # 3. Update the source chunk to point to the specific page
         source_chunk = f"Ref: {page_info}" if page_info != "N/A" else "⚠️ Clinical reasoning only"
@@ -147,7 +156,7 @@ async def justification_node(state: NICEState) -> dict:
             "category":            category,
             "justification_text":  justification_text,
             "evidence_quote":      evidence_quote,   # <--- THE NEW FIELD
-            "source_document":     _build_source_document(code),
+            "source_document":     source_file,
             "source_chunk":        source_chunk,     # <--- UPDATED FIELD
             "confidence_score":    confidence,
             "tier":                tier,

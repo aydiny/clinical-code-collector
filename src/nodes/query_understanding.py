@@ -20,11 +20,16 @@ load_dotenv()
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
 
-from src.rag.retriever import get_retriever
+from src.rag.retriever import grounded_retrieval
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.vectorstores import Chroma
 from src.state import NICEState
 from src.utils.fhir_client import _get_headers, CONCEPT_TYPE_ROOTS, FHIR_BASE
+
+CHROMA_DB_DIR = "data/vectorstore/methodology_db_openai"
+EMBEDDING_MODEL_NAME = "text-embedding-3-small"
 
 # -------------------------------------------------------------------
 # LLM — GPT-4o for clinical reasoning quality
@@ -65,12 +70,6 @@ specific condition. You will encounter diagnoses, observations,
 procedures, medications, lab results, demographic criteria, 
 and combinations of these.
 
-── SNOMED CT REFERENCE ─────────────────────────────────────────────
-""" + SNOMED_HIERARCHY_CONTEXT + """
-When assigning snomed_top_hierarchy, you MUST use exactly one value
-from the list above. Never invent a value outside this list.
-────────────────────────────────────────────────────────────────────
-
 Return a VALID JSON object with EXACTLY these keys:
 
 {
@@ -88,13 +87,13 @@ Return a VALID JSON object with EXACTLY these keys:
   "related_conditions": 
       ["list of closely related conditions that may share codes"],
 
-   "excluded_diagnoses": 
+  "excluded_diagnoses": 
        ["list of SUBSTRINGS to filter out false-positive terminology matches (e.g., 'preserved' or 'Type 1'). DO NOT put concepts here if you need their SNOMED codes! Leave empty [] if none."],
    
-   "excluded_medications": 
+  "excluded_medications": 
        ["list of SUBSTRINGS to filter out false-positive medication terminology matches. CRITICAL: DO NOT list contraindicated or 'already treated' drugs here (like Dapagliflozin) because we need to fetch their codes! Leave empty [] if none."],    
 
-    "excluded_observations": 
+  "excluded_observations": 
        ["list of SUBSTRINGS to filter out false-positive lab terminology matches. Leave empty [] if none."],
 
   "relevant_guidelines": 
@@ -159,12 +158,14 @@ IMPORTANT RULES:
 
 IMPORTANT RULES:
 1. relevant_guidelines: only include guidelines you are highly confident exist. Never hallucinate a NICE guideline number. If uncertain, return [].
-2. excluded_diagnoses: think like a clinician — what similar-sounding conditions would be wrongly captured by this search? ALWAYS include standard medical acronyms (e.g., 'HFpEF') for the excluded conditions. CRITICAL: NEVER include the primary target condition or its acronyms (e.g., HFrEF) in this list. This list is STRICTLY for conditions you want to REJECT.
-3. search_terms: STRICTLY short clinical diagnoses and finding synonyms. CRITICAL: NEVER include long descriptive phrases (e.g., "Type 2 diabetes with HbA1c > 58"), medication names, lab test names, or generic metadata in this list. Keep terms short (1-4 words) and strictly focused on the core condition. You have dedicated buckets for medications and observations — use them! 
+2. search_terms: STRICTLY short clinical diagnoses and finding synonyms. CRITICAL: NEVER include long descriptive phrases (e.g., "Type 2 diabetes with HbA1c > 58"), medication names, lab test names, or generic metadata in this list. Keep terms short (1-4 words) and strictly focused on the core condition. You have dedicated buckets for medications and observations — use them! 
    ALWAYS include pre-2013 legacy terms for UK EHR compatibility.
-4. concept_type: if the cohort combines multiple distinct domains (e.g., a diagnosis AND a specific lab result threshold, or a diagnosis AND a medication constraint), you MUST use "mixed". Only use "diagnosis" if the cohort is PURELY defined by a disease/disorder. Do NOT use "demographic" just because the prompt uses the word "patients".
-5. ambiguity_notes: flag if the cohort description is clinically ambiguous.
-6. snomed_top_hierarchy: use ONLY values from the SNOMED CT Reference block above.
+3. excluded_diagnoses: think like a clinician — what similar-sounding conditions would be wrongly captured by this search? ALWAYS include standard medical acronyms (e.g., 'HFpEF') for the excluded conditions. CRITICAL: NEVER include the primary target condition or its acronyms (e.g., HFrEF) in this list. This list is STRICTLY for conditions you want to REJECT.
+4. excluded_medications: think like a clinician — what medications would be wrongly captured by this search? This list is STRICTLY for medications you want to REJECT.
+5. excluded_observations: think like a clinician — what observations would be wrongly captured by this search? This list is STRICTLY for conditions you want to REJECT.
+6. concept_type: if the cohort combines multiple distinct domains (e.g., a diagnosis AND a specific lab result threshold, or a diagnosis AND a medication constraint), you MUST use "mixed". Only use "diagnosis" if the cohort is PURELY defined by a disease/disorder. Do NOT use "demographic" just because the prompt uses the word "patients".
+7. ambiguity_notes: flag if the cohort description is clinically ambiguous.
+8. snomed_top_hierarchy: use ONLY values from the SNOMED CT Reference block above.
 
 """
 
@@ -243,7 +244,7 @@ def _validate_parsed_output(parsed: dict, research_question: str) -> dict:
         "snomed_top_hierarchy":          parsed.get("snomed_top_hierarchy",
                                                     "Clinical Finding"),
         "related_conditions":            parsed.get("related_conditions", []),
-        "relevant_observations":          parsed.get("relevant_observations"),
+        "relevant_observations":         parsed.get("relevant_observations"),
         "relevant_medications":          parsed.get("relevant_medications"),
         "excluded_diagnoses":            parsed.get("excluded_diagnoses", []),
         "excluded_medications":          parsed.get("excluded_medications", []),
@@ -315,40 +316,34 @@ async def query_understanding_node(state: NICEState) -> dict:
     research_question = state["research_question"]
 
    # ── RAG: retrieve relevant NICE guideline chunks ──────────────
-    retriever         = get_retriever(k=20)
     guideline_context = "No relevant guidelines retrieved."
     guideline_docs = []
-    if retriever:
-        try:
-            guideline_docs = retriever.invoke(research_question)
+
+    try:
+            # Initialize your database connection
+            db = Chroma(
+                persist_directory=CHROMA_DB_DIR, 
+                embedding_function=OpenAIEmbeddings(model="text-embedding-3-small")
+            )
+            
+            # Call the new Grounded Retrieval with the raw string
+            guideline_docs = grounded_retrieval(research_question=research_question, vector_db=db)
+            
             if guideline_docs:
-                # 1. Build Structured Context with XML tags and metadata
                 structured_context = ""
                 for i, doc in enumerate(guideline_docs):
-                    # Some loaders use 0-indexed pages, so you might need to +1 depending on your PDF loader
                     page_num = doc.metadata.get("page", "Unknown Page")
                     source_file = os.path.basename(str(doc.metadata.get("source", "Unknown Source")))
                     
-                    # Wrap each chunk in an XML tag so the LLM can reference it
                     structured_context += f"\n<CHUNK id='{i}' source='{source_file}' page='{page_num}'>\n"
                     structured_context += doc.page_content
                     structured_context += f"\n</CHUNK>\n"
                 
-                # Assign the structured text to your context variable
                 guideline_context = structured_context
                 
-                # 2. Safely extract the filename from the metadata for tracking
-                sources_set = {os.path.basename(str(d.metadata.get("source", "Unknown"))) for d in guideline_docs}
-                
-                print(f"\n[DEBUG RAG] 🔍 Retrieved {len(guideline_docs)} chunks.")
-                print(f"[DEBUG RAG] 📄 Sources found: {list(sources_set)}")
-                print(f"[DEBUG RAG] 📝 Top chunk preview:\n--- START PREVIEW ---\n{guideline_docs[0].page_content[:300]}...\n--- END PREVIEW ---\n")
-            # -------------------------------
-        except Exception as e:
-            print(f"[query_understanding] RAG retrieval failed: {e}")
-    else:
-        print("[query_understanding] RAG skipped — vector store not built yet")
-
+    except Exception as e:
+        print(f"[query_understanding] RAG retrieval failed: {e}")
+    
     # ── LLM Call — grounded ───────────────────────────────────────
     messages = [
         SystemMessage(content=SYSTEM_PROMPT),
@@ -365,10 +360,9 @@ INSTRUCTIONS FOR GROUNDED FIELDS:
 - relevant_guidelines: populate ONLY from the retrieved sources above.
   Use the exact source name shown in brackets e.g. "NICE NG106 — Chronic Heart Failure"
   If nothing relevant was retrieved, return [].
-- explicit_exclusions: derive from the retrieved guidance above where possible.
-  If the general concept (e.g., "preserved ejection fraction") is mentioned in the text, 
-  you do NOT need the clinical reasoning tag. Only append "(clinical reasoning)" 
-  if you are inferring the exclusion without any text support.
+- excluded_diagnoses, excluded_medications, excluded_observations: derive from the retrieved guidance above where possible.
+  Append "(clinical reasoning)" if you are inferring the exclusion without any text support. If the concept is very generic and is mentioned in the text, 
+  you do NOT need the "(clinical reasoning)" tag. 
 
 All other fields: use your clinical expertise as normal.
         """)

@@ -5,6 +5,9 @@ import pandas as pd
 import uuid
 from datetime import datetime
 from src.utils.dummy_data import DUMMY_STATE
+import uuid
+import io
+import json
 
 USE_DUMMY_DATA = True
 
@@ -411,6 +414,25 @@ def render_footer(state):
                 st.session_state.submitted = True
                 st.success("Submitted for audit. All decisions and feedback have been recorded.")
 
+# --- 1. ADD THE HELPER FUNCTION HERE (Above main) ---
+def convert_to_excel(justifications_list):
+    """Converts the list of justified codes into an Excel file in memory."""
+    df = pd.DataFrame(justifications_list)
+    
+    if not df.empty:
+        # Filter and order the columns to make it look professional
+        display_columns = [
+            "snomed_id", "preferred_term", "category", "tier", 
+            "justification_text", "evidence_quote", "source_document", "source_chunk"
+        ]
+        df = df[[col for col in display_columns if col in df.columns]]
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Justified Codes')
+    return buffer.getvalue()
+# -----------------------------------------------------
+
 def main():
     render_header()
     query, run = render_query_input()
@@ -430,15 +452,10 @@ def main():
         # --- THE REAL LANGGRAPH PIPELINE ---
         with st.spinner("Running clinical AI pipeline... (This may take 30-60 seconds)"):
             try:
-                # 1. Feed the text input to your LangGraph state
                 initial_state = {"research_question": query}
-                
                 thread_config = {"configurable": {"thread_id": st.session_state.session_id}}
-
-                # 2. Safely run the async graph inside Streamlit using asyncio
                 final_state = asyncio.run(clinical_graph.ainvoke(initial_state, config=thread_config))
                 
-                # 3. Check if codes were actually found
                 if final_state.get("justifications") and len(final_state["justifications"]) > 0:
                     st.session_state.state = final_state
                     st.session_state.no_results = False
@@ -466,6 +483,30 @@ def main():
             unsafe_allow_html=True
         )
         render_code_cards(state)
+        
+        # --- 2. ADD THE DOWNLOAD BUTTONS HERE ---
+        st.markdown("### 📥 Export Results")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            excel_data = convert_to_excel(state["justifications"])
+            st.download_button(
+                label="📊 Download Output as Excel",
+                data=excel_data,
+                file_name="NICE_clinical_codes.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            
+        with col2:
+            json_string = json.dumps(state["justifications"], indent=4)
+            st.download_button(
+                label="📥 Download Output as JSON",
+                data=json_string,
+                file_name="NICE_clinical_codes.json",
+                mime="application/json"
+            )
+        # ----------------------------------------
+        
         render_footer(state)
         render_footer_credits()
     else:

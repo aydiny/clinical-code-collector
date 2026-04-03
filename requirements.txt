@@ -6,3 +6,6 @@ pydantic>=2.0.0
 langchain-openai
 langchain-groq
 python-dotenv
+openpyxl==3.1.5
+langchain-community
+chromadb

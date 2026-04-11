@@ -41,7 +41,7 @@ def clean_boilerplate_text(text: str) -> str:
     lines = [line for line in cleaned_text.split('\n') if not line.strip().startswith("Page ") and "of 1" not in line]
     return " ".join(lines).strip()
 
-def get_relevant_pdf(condition_name: str, pdf_folder: str = PDF_DOCS_DIR) -> str:
+def get_relevant_pdf(condition_name: str, pdf_folder: str = "pdf_docs") -> str:
     """
     SMART DOCUMENT ROUTER:
     First checks the exact dictionary mapping. If not found, it dynamically scans 
@@ -73,64 +73,124 @@ def get_relevant_pdf(condition_name: str, pdf_folder: str = PDF_DOCS_DIR) -> str
 # -------------------------------------------------------------------
 # THE CORE RETRIEVAL ENGINE (Your Grounded Logic)
 # -------------------------------------------------------------------
-
-def grounded_retrieval(research_question: str, vector_db: Chroma) -> list:
+def advanced_retrieval(extracted_info: dict, vector_db: Chroma) -> list:
     """
-    Takes the RAW user query, uses the Smart Router to target specific files, 
-    performs an MMR search, and cleans the output for LLM Grounding.
+    Takes the structured output from Node 1 (GPT-4o) and performs a highly filtered, 
+    MMR-based search on ChromaDB, applying Demographic, QOF, and Exclusion shields.
     """
-    print("\n--- [PHASE 1] GROUNDED RAG RETRIEVAL STARTED ---")
+    print("\n--- [PHASE 2] ADVANCED RAG RETRIEVAL STARTED ---")
     
-    # 1. SMART ROUTER INTEGRATION
-    clinical_allowed_files = []
-    question_lower = research_question.lower()
+    primary = extracted_info.get('primary_condition', '')
+    related_conditions = extracted_info.get('related_conditions', [])
+    qof_prefix = extracted_info.get('qof_domain_prefix', '')
+    target_demographic = extracted_info.get('target_demographic', 'adult').lower()
     
-    # Scan the raw question for known condition keywords
-    for condition in CONDITION_TO_FILE.keys():
-        if condition.lower() in question_lower:
-            # If a condition is mentioned, route it through Bihter's method
-            filename = get_relevant_pdf(condition_name=condition)
-            
-            if filename:
-                # THE FIX: Add BOTH Windows and Linux path variations to the allowed list!
-                linux_path = f"{PDF_DOCS_DIR}/{filename}"
-                windows_path = f"{PDF_DOCS_DIR}\\{filename}".replace("/", "\\")
-                
-                if linux_path not in clinical_allowed_files:
-                    clinical_allowed_files.append(linux_path)
-                if windows_path not in clinical_allowed_files:
-                    clinical_allowed_files.append(windows_path)
-                    
-                print(f"[*] Smart Router activated: Limiting search to '{filename}' (Omni-Slash active)")
-
-    # If the router found a file, apply the filter. Otherwise, search the whole DB.
-    clinical_search_filter = {"source": {"$in": clinical_allowed_files}} if clinical_allowed_files else None
-    
-    if not clinical_allowed_files:
-         print("[*] No exact condition matched in routing. Performing global database search.")
-
-    # 2. SEMANTIC MMR SEARCH
-    print(f"    -> Querying Vector DB with raw research question...")
-    docs = vector_db.max_marginal_relevance_search(
-        research_question,
-        k=8,          # Final number of chunks to send to the LLM
-        fetch_k=30,   # Initial pool to pick diverse chunks from
-        lambda_mult=0.5,
-        filter=clinical_search_filter
+    # Combine all explicit exclusions for the Exclusion Shield
+    exclusions = (
+        extracted_info.get('excluded_diagnoses', []) + 
+        extracted_info.get('excluded_medications', []) + 
+        extracted_info.get('excluded_observations', [])
     )
         
-    # 3. DEDUPLICATION AND CLEANING
-    print("[*] Deduplicating and cleaning boilerplate text...")
+    # Build allowed files list for clinical searches using the SMART ROUTER
+    clinical_allowed_files = []
+    primary_pdf = get_relevant_pdf(primary)
+    
+    if primary_pdf:
+        clinical_allowed_files.append(f"pdf_docs/{primary_pdf}")
+        
+    for related in related_conditions:
+        related_pdf = get_relevant_pdf(related)
+        if related_pdf and f"pdf_docs/{related_pdf}" not in clinical_allowed_files:
+            clinical_allowed_files.append(f"pdf_docs/{related_pdf}")
+            
+    print(f"[*] Target Demographic identified as: {target_demographic.upper()}")
+    print(f"[*] Applying strict clinical metadata filter. Allowed files: {clinical_allowed_files}")
+    
+    clinical_search_filter = {"source": {"$in": clinical_allowed_files}} if clinical_allowed_files else None
+    
+    all_retrieved_documents = []
+    demo_prefix = "Pediatric" if target_demographic == "pediatric" else "Adult"
+    
+    # --- QUERY 1: QOF Specific Query (Primary Condition Only) ---
+    if primary:
+        qof_query = f"QOF indicator business rules register {qof_prefix} {primary}"
+        print(f"    -> Querying Vector DB: '{qof_query}' (Strict QOF File Filter - Similarity Only)")
+        docs = vector_db.similarity_search(
+            qof_query,
+            k=3,
+            filter={"source": f"pdf_docs/{QOF_FILE}"} 
+        )
+        all_retrieved_documents.extend(docs)
+        
+        # --- QUERY 2: Clinical Definitions & Management (Primary) ---
+        clin_query = f"{demo_prefix} Definitions, diagnostic criteria, clinical management rules, pharmacological treatment {primary}"
+        print(f"    -> Querying Vector DB: '{clin_query}' (Clinical Filter)")
+        docs = vector_db.max_marginal_relevance_search(
+            clin_query,
+            k=3,
+            fetch_k=15,
+            lambda_mult=0.5,
+            filter=clinical_search_filter
+        )
+        all_retrieved_documents.extend(docs)
+    
+    # --- QUERY 3: Related Conditions Context ---
+    for related in related_conditions:
+        rel_query = f"{demo_prefix} Diagnostic criteria clinical management {related}"
+        print(f"    -> Querying Vector DB: '{rel_query}' (Clinical Filter)")
+        docs = vector_db.max_marginal_relevance_search(
+            rel_query,
+            k=3,
+            fetch_k=15,
+            lambda_mult=0.5,
+            filter=clinical_search_filter
+        )
+        all_retrieved_documents.extend(docs)
+        
+    # --- DEDUPLICATION AND DYNAMIC SHIELDING ---
+    print("[*] Deduplicating, cleaning, and applying dynamic demographic/exclusion shields...")
     unique_chunks = {}
     
-    for doc in docs:
+    for doc in all_retrieved_documents:
+        content_lower = doc.page_content.lower()
+        source_file = doc.metadata.get('source', '')
+        
+        # 1. QOF DOMAIN SHIELD: Prevent unrelated diseases from leaking through QOF rules
+        if "qof_combined" in source_file and qof_prefix:
+            if qof_prefix.lower() not in content_lower:
+                continue 
+
+        # 2. DYNAMIC DEMOGRAPHIC SHIELD: Prevent adult/pediatric guidelines from mixing
+        has_pediatric_terms = any(term in content_lower for term in ["children", "young person", "paediatric", "pediatric", "child", "infant"])
+        has_adult_terms = "adult" in content_lower
+
+        if target_demographic == "pediatric":
+            # If the patient is a child, block pure adult chunks
+            if has_adult_terms and not has_pediatric_terms:
+                continue
+        else:
+            # If the patient is an adult, block pure pediatric chunks
+            if has_pediatric_terms and not has_adult_terms:
+                continue 
+
+        # 3. EXCLUSION SHIELD: Discard chunks that explicitly mention excluded terms
+        should_exclude = False
+        if exclusions:
+            for exc in exclusions:
+                if exc.strip() and exc.strip().lower() in content_lower:
+                    should_exclude = True
+                    break
+                    
+        if should_exclude:
+            print("    [!] Shield activated: Chunk discarded due to an explicit exclusion rule.")
+            continue
+            
         doc_snippet = doc.page_content[:100]
         if doc_snippet not in unique_chunks:
-            # Apply Bihter's boilerplate cleaner here!
             doc.page_content = clean_boilerplate_text(doc.page_content)
             unique_chunks[doc_snippet] = doc
             
     final_documents = list(unique_chunks.values())
-    print(f"--- [PHASE 1 COMPLETE]: Retrieved {len(final_documents)} chunks for LLM Grounding ---")
-
+    print(f"--- [PHASE 2 COMPLETE]: Retrieved {len(final_documents)} highly relevant, {target_demographic}-focused chunks ---")
     return final_documents

@@ -7,7 +7,7 @@ Node 1:  GPT-4o parses ANY patient cohort description into structured state
                  suggested_validation_sources, explicit_exclusions
 
 Node 1b: NHS Terminology Server enriches search_terms with official synonyms
-         No LLM — pure MCP tool call — authoritative NHS synonyms only
+         No LLM  — authoritative NHS synonyms only
          Non-fatal — falls back to LLM terms if API unavailable
 """
 import json
@@ -20,7 +20,7 @@ load_dotenv()
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
 
-from src.rag.retriever import grounded_retrieval
+from src.rag.retriever import advanced_retrieval
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_openai import OpenAIEmbeddings
@@ -39,134 +39,41 @@ llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=1000)
 # -------------------------------------------------------------------
 # System Prompt — fully generic, no condition-specific knowledge
 # -------------------------------------------------------------------
-SNOMED_HIERARCHY_CONTEXT = """
-SNOMED CT UK Edition — Top Level Hierarchies (stable reference):
-- Clinical Finding:   diagnoses, disorders, symptoms, observations
-                      e.g. heart failure, type 2 diabetes, depression
-- Procedure:          operations, therapies, investigations, screenings
-                      e.g. echocardiogram, CABG, medication review
-- Observable Entity:  measurable parameters, things that can be tested
-                      e.g. HbA1c, eGFR, LVEF, blood pressure
-- Body Structure:     anatomical locations and structures
-                      e.g. left ventricle, coronary artery
-- Substance:          drugs, chemical compounds, biologics, vaccines
-                      e.g. dapagliflozin, insulin, metformin
-- Situation:          context-dependent findings
-                      e.g. family history of MI, carer for patient
-- Qualifier Value:    severity, laterality, course modifiers
-                      e.g. chronic, acute, bilateral, severe
-- Mixed:              use ONLY when cohort genuinely spans two or more
-                      of the above — e.g. diagnosis + lab result threshold
-"""
-
 SYSTEM_PROMPT = """
-You are a clinical informatics expert specialising in SNOMED CT and 
-UK primary care coding. A user will describe a patient cohort in 
-plain English. Your job is to parse this into structured components
-for an automated SNOMED CT code search pipeline.
+# ROLE
+You are a clinical informatics expert specializing in SNOMED CT and UK primary care coding. 
+Your task is to parse a plain English patient cohort description into a structured JSON object for an automated SNOMED CT search pipeline.
 
-You must reason about the clinical domain WITHOUT assuming any 
-specific condition. You will encounter diagnoses, observations, 
-procedures, medications, lab results, demographic criteria, 
-and combinations of these.
+# CLINICAL REASONING INSTRUCTIONS
+Use your medical expertise to infer standard pharmacological treatments, relevant lab results, and related co-morbidities, even if the user does not explicitly state them. 
 
-Return a VALID JSON object with EXACTLY these keys:
+# FIELD DEFINITIONS & RULES
 
-{
-  "primary_condition": 
-      "string — the single most important clinical concept to search for",
+## 1. Core Classification
+* primary_condition: The single most important clinical concept (string).
+* concept_type: EXACTLY ONE OF: [diagnosis, observation, procedure, finding, lab_result, medication, demographic, situation, mixed]. Default to "diagnosis" for diseases.
+* snomed_top_hierarchy: EXACTLY ONE OF: [Clinical Finding, Procedure, Observable Entity, Substance, Body Structure, Situation, Mixed].
+* target_demographic: "adult" or "pediatric" (default "adult").
+* qof_domain_prefix: Official UK QOF abbreviation (e.g., "DM", "HYP"). Empty string if unknown.
 
-  "concept_type": 
-      "one of: diagnosis | observation | procedure | finding | 
-       lab_result | medication | demographic | situation | mixed",
+## 2. Inclusions (What to Search For)
+* search_terms: Array of 6-10 SNOMED CT terms for the primary condition. Include exact phrases, synonyms, pre-2013 legacy UK EHR terms, and acronyms. STRICTLY clinical diagnoses/findings. DO NOT put medications or lab tests here.
+* related_conditions: Array of closely related co-morbidities.
+* relevant_medications: Array of specific, singular generic active ingredients (e.g., "Dapagliflozin"). NO plural drug classes (e.g., avoid "Beta-blockers"). Empty if none.
+* relevant_observations: Array of related lab tests, imaging, or vital signs (e.g., "HbA1c"). Empty if none.
 
-  "snomed_top_hierarchy": 
-      "one of: Clinical Finding | Procedure | Observable Entity | 
-       Substance | Body Structure | Situation | Mixed",
+## 3. Exclusions (What to Filter Out)
+* excluded_diagnoses: Array of substrings to reject (e.g., "Type 1", "preserved"). CRITICAL: Must NOT include the primary condition.
+* excluded_medications: Array of substrings to reject false-positive drug matches. Do NOT put indicated treatments here.
+* excluded_observations: Array of substrings to reject false-positive lab matches.
 
-  "related_conditions": 
-      ["list of closely related conditions that may share codes"],
+## 4. Metadata & Validation
+* relevant_guidelines: Array of highly confident NICE/NHS guidelines (e.g., "NICE NG106"). Empty [] if unsure. Do not hallucinate.
+* suggested_validation_sources: Array of 3-5 plain English search terms for OpenCodelists.org (e.g., "heart failure QOF").
+* ambiguity_notes: Note any clinical ambiguity in the user's description (e.g., missing age threshold). Empty string if none.
 
-  "excluded_diagnoses": 
-       ["list of SUBSTRINGS to filter out false-positive terminology matches (e.g., 'preserved' or 'Type 1'). DO NOT put concepts here if you need their SNOMED codes! Leave empty [] if none."],
-   
-  "excluded_medications": 
-       ["list of SUBSTRINGS to filter out false-positive medication terminology matches. CRITICAL: DO NOT list contraindicated or 'already treated' drugs here (like Dapagliflozin) because we need to fetch their codes! Leave empty [] if none."],    
-
-  "excluded_observations": 
-       ["list of SUBSTRINGS to filter out false-positive lab terminology matches. Leave empty [] if none."],
-
-  "relevant_guidelines": 
-      ["list of NICE/NHS guidelines likely relevant to this cohort,
-        format: 'NICE NG106 - Chronic Heart Failure' — 
-        only include if you are confident they exist,
-        leave empty list [] if uncertain"],
-
-  "suggested_validation_sources": 
-      ["list of 3-5 plain English search terms to find relevant 
-        codelists on OpenCodelists.org — 
-        e.g. 'heart failure reduced ejection fraction',
-             'HFrEF primary care register',
-             'heart failure QOF' — 
-        these will be passed directly to search_codelists() API"],
-
-   "relevant_medications": 
-        ["list of specific, singular generic medication names or active ingredients 
-         (e.g., 'Dapagliflozin', 'Bisoprolol'). 
-         CRITICAL: Do NOT use plural drug classes (like 'SGLT2 inhibitors' or 'Beta-blockers') 
-         because SNOMED text search will fail to find them. Leave empty [] if none."],
-   
-   "relevant_observations": 
-        ["list of relevant lab tests, imaging results, or vital signs 
-        (e.g., 'LVEF', 'HbA1c', 'Blood pressure'). Leave empty [] if none."],
-
-  "search_terms": 
-      ["list of 6-10 SNOMED CT search terms including:
-        - primary condition exact phrase
-        - all clinical synonyms
-        - pre-2013 legacy UK EHR terms (EMIS/SystmOne conventions)
-        - acronyms and abbreviations
-        - mechanistic equivalents
-        - do NOT include exclusion terms"],
-
-  "ambiguity_notes": 
-      "string — note any ambiguities in the cohort description that 
-       a clinician should clarify, or empty string if none"
-}
-
-IMPORTANT RULES:
-1. relevant_guidelines: only include guidelines you are highly confident 
-   exist. Never hallucinate a NICE guideline number. If uncertain, 
-   return [].
-2. EXCLUSIONS: think like a clinician. If the user requires a specific 
-   subtype of a disease (e.g., 'Type 2 Diabetes', 'HFrEF'), you MUST explicitly
-   exclude the other major subtypes (e.g., 'Type 1 Diabetes', 'HFpEF'). ALWAYS 
-   include standard medical acronyms. CRITICAL: NEVER include the primary target condition in this list. 
-3. search_terms:
-   STRICTLY CLINICAL DIAGNOSES and finding SYNONYMS. CRITICAL: NEVER include medication names (e.g., 'SGLT2 inhibitors'), 
-   lab test names (e.g., 'HbA1c'), or generic metadata (e.g., 'UK EHR', 'management') in this list. 
-   ALWAYS include pre-2013 legacy terms for UK EHR 
-   compatibility. 
-4. concept_type: if the cohort is primarily defined by a disease/disorder,
-   use "diagnosis". Do NOT use "demographic" just because the prompt uses 
-   the word "patients". Use "mixed" if it combines a diagnosis and a lab result.
-5. ambiguity_notes: flag if the cohort description is clinically 
-   ambiguous — e.g. "heart failure" without specifying type, 
-   "elderly patients" without age threshold
-6. snomed_top_hierarchy: use ONLY values from the SNOMED CT Reference
-   block above — never invent a value outside that list
-
-IMPORTANT RULES:
-1. relevant_guidelines: only include guidelines you are highly confident exist. Never hallucinate a NICE guideline number. If uncertain, return [].
-2. search_terms: STRICTLY short clinical diagnoses and finding synonyms. CRITICAL: NEVER include long descriptive phrases (e.g., "Type 2 diabetes with HbA1c > 58"), medication names, lab test names, or generic metadata in this list. Keep terms short (1-4 words) and strictly focused on the core condition. You have dedicated buckets for medications and observations — use them! 
-   ALWAYS include pre-2013 legacy terms for UK EHR compatibility.
-3. excluded_diagnoses: think like a clinician — what similar-sounding conditions would be wrongly captured by this search? ALWAYS include standard medical acronyms (e.g., 'HFpEF') for the excluded conditions. CRITICAL: NEVER include the primary target condition or its acronyms (e.g., HFrEF) in this list. This list is STRICTLY for conditions you want to REJECT.
-4. excluded_medications: think like a clinician — what medications would be wrongly captured by this search? This list is STRICTLY for medications you want to REJECT.
-5. excluded_observations: think like a clinician — what observations would be wrongly captured by this search? This list is STRICTLY for conditions you want to REJECT.
-6. concept_type: if the cohort combines multiple distinct domains (e.g., a diagnosis AND a specific lab result threshold, or a diagnosis AND a medication constraint), you MUST use "mixed". Only use "diagnosis" if the cohort is PURELY defined by a disease/disorder. Do NOT use "demographic" just because the prompt uses the word "patients".
-7. ambiguity_notes: flag if the cohort description is clinically ambiguous.
-8. snomed_top_hierarchy: use ONLY values from the SNOMED CT Reference block above.
-
+# OUTPUT FORMAT
+Return ONLY a valid JSON object containing exactly the 14 keys defined above.
 """
 
 def _parse_llm_response(content: str) -> dict:
@@ -254,6 +161,7 @@ def _validate_parsed_output(parsed: dict, research_question: str) -> dict:
                                                     [primary]),
         "search_terms":                  parsed.get("search_terms", [primary]),
         "ambiguity_notes":               parsed.get("ambiguity_notes", "")
+        
     }
 
 
@@ -315,64 +223,22 @@ async def query_understanding_node(state: NICEState) -> dict:
     """
     research_question = state["research_question"]
 
-   # ── RAG: retrieve relevant NICE guideline chunks ──────────────
-    guideline_context = "No relevant guidelines retrieved."
-    guideline_docs = []
-
-    try:
-            # Initialize your database connection
-            db = Chroma(
-                persist_directory=CHROMA_DB_DIR, 
-                embedding_function=OpenAIEmbeddings(model="text-embedding-3-small")
-            )
-            
-            # Call the new Grounded Retrieval with the raw string
-            guideline_docs = grounded_retrieval(research_question=research_question, vector_db=db)
-            
-            if guideline_docs:
-                structured_context = ""
-                for i, doc in enumerate(guideline_docs):
-                    page_num = doc.metadata.get("page", "Unknown Page")
-                    source_file = os.path.basename(str(doc.metadata.get("source", "Unknown Source")))
-                    
-                    structured_context += f"\n<CHUNK id='{i}' source='{source_file}' page='{page_num}'>\n"
-                    structured_context += doc.page_content
-                    structured_context += f"\n</CHUNK>\n"
-                
-                guideline_context = structured_context
-                
-    except Exception as e:
-        print(f"[query_understanding] RAG retrieval failed: {e}")
-    
-    # ── LLM Call — grounded ───────────────────────────────────────
+  
+    # ── LLM Call —  ───────────────────────────────────────
     messages = [
         SystemMessage(content=SYSTEM_PROMPT),
         HumanMessage(content=f"""
 Patient cohort description:
-{research_question}
-
-Retrieved NICE / NHS guidance (use as primary reference):
-──────────────────────────────────────────────────────────
-{guideline_context}
-──────────────────────────────────────────────────────────
-
-INSTRUCTIONS FOR GROUNDED FIELDS:
-- relevant_guidelines: populate ONLY from the retrieved sources above.
-  Use the exact source name shown in brackets e.g. "NICE NG106 — Chronic Heart Failure"
-  If nothing relevant was retrieved, return [].
-- excluded_diagnoses, excluded_medications, excluded_observations: derive from the retrieved guidance above where possible.
-  Append "(clinical reasoning)" if you are inferring the exclusion without any text support. If the concept is very generic and is mentioned in the text, 
-  you do NOT need the "(clinical reasoning)" tag. 
-
-All other fields: use your clinical expertise as normal.
-        """)
-    ]
+{research_question}""")]
 
     print("[query_understanding] Calling GPT-4o...")
     response = await llm.ainvoke(messages)
-
     parsed  = _parse_llm_response(response.content)
     cleaned = _validate_parsed_output(parsed, research_question)
+
+    # Validate required demographic and QOF variables, falling back to "adult" if missing
+    target_demographic = parsed.get("target_demographic", "adult").lower()
+    qof_domain_prefix = parsed.get("qof_domain_prefix", "")
 
     # Log key outputs for debugging
     print(f"[query_understanding] Primary condition  : "
@@ -397,11 +263,29 @@ All other fields: use your clinical expertise as normal.
           f"{cleaned['relevant_medications']}")
     print(f"[query_understanding] relevant observations : "
           f"{cleaned['relevant_observations']}")
-    
 
     if cleaned["ambiguity_notes"]:
         print(f"[query_understanding] ⚠️  AMBIGUITY: "
               f"{cleaned['ambiguity_notes']}")
+
+    # Initialize your database connection
+    vector_db = Chroma(
+        persist_directory=CHROMA_DB_DIR, 
+        embedding_function=OpenAIEmbeddings(model=EMBEDDING_MODEL_NAME)
+    )
+
+    # 2. ADVANCED RAG RETRIEVAL (Your custom logic)
+    final_docs = advanced_retrieval(parsed, vector_db)
+
+    # Build the context payload for the synthesis node
+    rag_payload = ""
+    found_guidelines = set(parsed.get("relevant_guidelines", []))
+    
+    for doc in final_docs:
+        source = os.path.basename(doc.metadata.get('source', 'Unknown'))
+        filename = source.replace('.pdf', '')
+        found_guidelines.add(filename)
+        rag_payload += f"--- Source: {filename} ---\n{doc.page_content}\n\n"
 
     # ------------------------------------------------------------------
     # NODE 1b: NHS Synonym Enrichment
@@ -435,7 +319,7 @@ All other fields: use your clinical expertise as normal.
         "excluded_observations":         cleaned["excluded_observations"],
         "relevant_medications":          cleaned["relevant_medications"],
         "relevant_observations":         cleaned["relevant_observations"],
-        "relevant_guidelines":           cleaned["relevant_guidelines"],
+        #"relevant_guidelines":           cleaned["relevant_guidelines"],
         "suggested_validation_sources":  cleaned["suggested_validation_sources"],
         "ambiguity_notes":               cleaned["ambiguity_notes"],
 
@@ -448,6 +332,10 @@ All other fields: use your clinical expertise as normal.
         "human_feedback":                None,
         "final_output":                  None,
 
-        "rag_context": guideline_context,  
-        "rag_sources": list(set([os.path.basename(d.metadata.get("source", "")) for d in guideline_docs]))
+        "relevant_guidelines":           list(found_guidelines),
+        "rag_sources":                   list(found_guidelines),
+        #"rag_sources": list(set([os.path.basename(d.metadata.get("source", "")) for d in guideline_docs])),
+        "rag_context": rag_payload.strip(),
+        "qof_domain_prefix":             qof_domain_prefix,
+        "target_demographic":            target_demographic,
     }

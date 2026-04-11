@@ -52,6 +52,10 @@ class NICEState(TypedDict):
     ambiguity_notes:              str         
     rag_context:                  str
     rag_sources:                  List[str]
+    
+    # Advanced RAG Additional Variables
+    qof_domain_prefix:            str
+    target_demographic:           str
 
     # --- Node 2 Output ---
     candidate_codes:              List[CandidateCode]
@@ -71,4 +75,4 @@ class NICEState(TypedDict):
     human_feedback:               Optional[str]
 
     # --- Final Output ---
-    final_output:                 Optional[List[Justification]]
+    final_output:                 Optional[List[dict]]

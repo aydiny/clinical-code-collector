@@ -104,71 +104,96 @@ async def justification_node(state: NICEState) -> dict:
         found_in_names = code.get("found_in_codelists", [])
         is_nhsd        = code.get("is_nhsd_refset", False)
         is_qof         = code.get("qof_match", False)
+        ocl_match      = code.get("opencodelists_match", "")
+        semantic_score = code.get("semantic_score")
 
-        prompt = _build_justification_prompt(
-            code=code,
-            research_question=research_question,
-            rag_context=rag_context,
-        )
+        if tier=="tier_1" or tier=="tier_2":
+        
+            prompt = _build_justification_prompt(
+                code=code,
+                research_question=research_question,
+                rag_context=rag_context,
+            )
 
-        messages = [
-            SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=prompt)
-        ]
+            messages = [
+                SystemMessage(content=SYSTEM_PROMPT),
+                HumanMessage(content=prompt)
+            ]
 
-        try:
-            response = await llm.ainvoke(messages)
-            
-            # 1. Clean the response (LLMs sometimes wrap JSON in markdown blocks like ```json ... ```)
-            clean_response = response.content.strip()
-            if clean_response.startswith("```json"):
-                clean_response = clean_response[7:-3].strip()
-            elif clean_response.startswith("```"):
-                clean_response = clean_response[3:-3].strip()
+            try:
+                response = await llm.ainvoke(messages)
                 
-            # 2. Parse the JSON
-            data = json.loads(clean_response)
-            
-            justification_text = data.get("justification", "No justification provided.")
-            evidence_quote = data.get("quote", "No direct quote found.")
-            page_info = data.get("page", "N/A")
-            source_file = data.get("source_file", "No direct quote found.")
-            
-        except json.JSONDecodeError as e:
-            # Fallback if the LLM disobeys and writes plain text instead of JSON
-            justification_text = f"[Format Error] Raw text: {response.content}"
-            evidence_quote = "N/A"
-            page_info = "N/A"
-            source_file = "N/A"  # <-- ADDED
-        except Exception as e:
-            justification_text = f"[Justification generation failed: {e}]"
-            evidence_quote = "N/A"
-            page_info = "N/A"
-            source_file = "N/A"  # <-- ADDED
+                # 1. Clean the response (LLMs sometimes wrap JSON in markdown blocks like ```json ... ```)
+                clean_response = response.content.strip()
+                if clean_response.startswith("```json"):
+                    clean_response = clean_response[7:-3].strip()
+                elif clean_response.startswith("```"):
+                    clean_response = clean_response[3:-3].strip()
+                    
+                # 2. Parse the JSON
+                data = json.loads(clean_response)
+                
+                justification_text = data.get("justification", "No justification provided.")
+                evidence_quote = data.get("quote", "No direct quote found.")
+                page_info = data.get("page", "N/A")
+                source_file = data.get("source_file", "No direct quote found.")
+                
+            except json.JSONDecodeError as e:
+                # Fallback if the LLM disobeys and writes plain text instead of JSON
+                justification_text = f"[Format Error] Raw text: {response.content}"
+                evidence_quote = "N/A"
+                page_info = "N/A"
+                source_file = "N/A"  # <-- ADDED
+            except Exception as e:
+                justification_text = f"[Justification generation failed: {e}]"
+                evidence_quote = "N/A"
+                page_info = "N/A"
+                source_file = "N/A"  # <-- ADDED
 
-        # 3. Update the source chunk to point to the specific page
-        source_chunk = f"Ref: {page_info}" if page_info != "N/A" else "⚠️ Clinical reasoning only"
+            # 3. Update the source chunk to point to the specific page
+            source_chunk = f"Ref: {page_info}" if page_info != "N/A" else "⚠️ Clinical reasoning only"
 
-        # 4. Append to the list (now including evidence_quote)
-        justifications.append({
-            "snomed_id":           snomed_id,
-            "preferred_term":      preferred_term,
-            "category":            category,
-            "justification_text":  justification_text,
-            "evidence_quote":      evidence_quote,   # <--- THE NEW FIELD
-            "source_document":     source_file,
-            "source_chunk":        source_chunk,     # <--- UPDATED FIELD
-            "confidence_score":    confidence,
-            "tier":                tier,
-            "qof_match":           is_qof,
-            "opencodelists_match": found_count > 0,
-            "found_in_codelists":  found_in_names,
-            "is_nhsd_refset":      is_nhsd,
-            "found_count":         found_count,
-        })
+            # 4. Append to the list (now including evidence_quote)
+            justifications.append({
+                "snomed_id":           snomed_id,
+                "preferred_term":      preferred_term,
+                "category":            category,
+                "justification_text":  justification_text,
+                "evidence_quote":      evidence_quote,   
+                "source_document":     source_file,
+                "source_chunk":        source_chunk,     
+                "confidence_score":    confidence,
+                "tier":                tier,
+                "qof_match":           is_qof,
+                "opencodelists_match": ocl_match,
+                "found_in_codelists":  found_in_names,
+                "is_nhsd_refset":      is_nhsd,
+                "found_count":         found_count,
+                "semantic_score":      semantic_score
+            })
 
-        icon = "💊" if category == "Medication" else "🔬" if category == "Observation" else "🩺"
-        print(f"[justification] {icon} {tier.upper()} | {snomed_id} | {preferred_term[:35]}... | RAG={'✅' if rag_sources else '⚠️'}")
+            icon = "💊" if category == "Medication" else "🔬" if category == "Observation" else "🩺"
+            print(f"[justification] {icon} {tier.upper()} | {snomed_id} | {preferred_term[:35]}... | RAG={'✅' if rag_sources else '⚠️'}")
+        
+        else:
+            justifications.append({
+                "snomed_id":           snomed_id,
+                "preferred_term":      preferred_term,
+                "category":            category,
+                "justification_text":  "Tier 3 - No justification sought",
+                "evidence_quote":      "Tier 3 - No justification sought",
+                "source_document":     source_file,
+                "source_chunk":        "Tier 3 - No justification sought",
+                "confidence_score":    confidence,
+                "tier":                tier,
+                "qof_match":           is_qof,
+                "opencodelists_match": ocl_match,
+                "found_in_codelists":  found_in_names,
+                "is_nhsd_refset":      is_nhsd,
+                "found_count":         found_count,
+                "semantic_score":      semantic_score
+            })
+
 
     return {
         "justifications": justifications,

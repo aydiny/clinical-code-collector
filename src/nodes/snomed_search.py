@@ -10,14 +10,12 @@ load_dotenv()
 
 async def snomed_search_node(state: NICEState) -> dict:
     """
-    Node 2: Symmetric SNOMED CT Search.
+    Node 2: Symmetric SNOMED CT Search with Descendant Traversal.
     Searches Diagnoses, Medications, and Observations in parallel.
-    Applies ONLY the exclusions strictly relevant to that category.
+    Automatically expands Medication VTMs into specific VMPs.
     """
     
     # ── THE SYMMETRIC ARCHITECTURE ──
-    # We map the inclusion terms to their specific SNOMED hierarchy,
-    # and pair them exclusively with their corresponding exclusion bucket.
     search_tasks = [
         {
             "category": "Diagnosis", 
@@ -41,19 +39,19 @@ async def snomed_search_node(state: NICEState) -> dict:
     
     all_candidates = {}
 
-    async with httpx.AsyncClient(base_url=FHIR_BASE, timeout=15.0) as client:
+    async with httpx.AsyncClient(base_url=FHIR_BASE, timeout=20.0) as client:
         for task in search_tasks:
             category = task["category"]
             root_id = task["root_id"]
-            exclusions = task["exclusions"] # Grab the specific exclusions for this loop
+            exclusions = task["exclusions"]
             
             for term in task["terms"]:
                 if not term.strip():
-                    continue # Skip empty strings
+                    continue
                     
                 print(f"[snomed_search] Searching {category}: '{term}'")
                 
-                # ── Text Search via NHS Terminology Server ──
+                # ── 1. Base Text Search (Finds the VTMs/abstract concepts) ──
                 try:
                     resp = await client.get("/ValueSet/$expand", headers=_get_headers(), params={
                         "url": f"http://snomed.info/sct?fhir_vs=isa/{root_id}",
@@ -70,27 +68,53 @@ async def snomed_search_node(state: NICEState) -> dict:
                     concept_id = hit.get("code")
                     preferred_term = hit.get("display", "")
                     
-                    # ── THE FIX ──
-                    # Filter against the local 'exclusions' list for this specific category
                     if not concept_id or _matches_exclusion(preferred_term, exclusions):
                         continue
                         
-                    # Add to candidate list if it passes the filter and isn't a duplicate
                     if concept_id not in all_candidates:
                         all_candidates[concept_id] = {
                             "snomed_id": concept_id,
                             "preferred_term": preferred_term,
-                            "parent_id": None, # Will be populated by Node 3 if needed
+                            "parent_id": None, 
                             "source": "snomed_search",
-                            "category": category  # Tag the code with its clinical type
+                            "category": category  
                         }
+
+                    # ── 2. The Descendant Traversal ──
+                    # If this is a medication, we need to traverse down to find the specific VMPs
+                    if category == "Medication":
+                        try:
+                            desc_resp = await client.get("/ValueSet/$expand", headers=_get_headers(), params={
+                                # We are asking for everything that IS-A [concept_id]
+                                "url": f"http://snomed.info/sct?fhir_vs=isa/{concept_id}",
+                                "count": MAX_DESCENDANTS
+                            })
+                            desc_resp.raise_for_status()
+                            desc_hits = desc_resp.json().get("expansion", {}).get("contains", [])
+                            
+                            if desc_hits:
+                                print(f"  ↳ [snomed_search] Found {len(desc_hits)} specific products for '{preferred_term}'")
+                            
+                            for d_hit in desc_hits:
+                                d_id = d_hit.get("code")
+                                d_term = d_hit.get("display", "")
+                                
+                                if d_id and d_id not in all_candidates and not _matches_exclusion(d_term, exclusions):
+                                    all_candidates[d_id] = {
+                                        "snomed_id": d_id,
+                                        "preferred_term": d_term,
+                                        "parent_id": concept_id, # Link back to the parent VTM
+                                        "source": "snomed_search_descendant",
+                                        "category": category
+                                    }
+                        except Exception as e:
+                            print(f"[snomed_search] ⚠️ Descendant search error for '{preferred_term}': {e}")
 
     candidate_list = list(all_candidates.values())
     
     # --- DEBUG LOGGING ---
     print(f"\n[snomed_search] ── Complete ──")
     print(f"[snomed_search] Total candidate codes found: {len(candidate_list)}")
-    # Count how many of each category we found
     cat_counts = {}
     for c in candidate_list:
         cat_counts[c["category"]] = cat_counts.get(c["category"], 0) + 1

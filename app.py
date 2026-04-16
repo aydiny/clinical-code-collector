@@ -262,9 +262,10 @@ def render_code_cards(state):
             qof_badge = '<span class="badge">QOF validated</span>' if j["qof_match"] else ""
             nhsd_badge = '<span class="badge">NHS Digital refset</span>' if j["is_nhsd_refset"] else ""
             opencl_badge = '<span class="badge">OpenCodelists</span>' if j["opencodelists_match"] else ""
+            semantic_badge = f'<span class="badge">Semantic Score:{j["semantic_score"]:.2f}</span>' 
             conf_badge = f'<span class="badge">Confidence: {j["confidence_score"]:.2f}</span>'
             st.markdown(
-                f'<b style="font-family:monospace">{j["snomed_id"]}</b> &nbsp; {j["preferred_term"]} &nbsp; {tier_badge} {qof_badge} {nhsd_badge} {opencl_badge} {conf_badge}',
+                f'<b style="font-family:monospace">{j["snomed_id"]}</b> &nbsp; {j["preferred_term"]} &nbsp; {tier_badge} {qof_badge} {nhsd_badge} {opencl_badge} {semantic_badge} {conf_badge}',
                 unsafe_allow_html=True
             )
             st.markdown(f"{j['justification_text']}")

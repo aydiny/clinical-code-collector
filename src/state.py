@@ -31,6 +31,7 @@ class Justification(TypedDict):
     found_in_codelists:  List[str]   
     is_nhsd_refset:      bool
     evidence_quote:      str
+    semantic_score:      float
 
 class NICEState(TypedDict):
     # --- Input ---

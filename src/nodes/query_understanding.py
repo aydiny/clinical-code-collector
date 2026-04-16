@@ -9,6 +9,9 @@ Node 1:  GPT-4o parses ANY patient cohort description into structured state
 Node 1b: NHS Terminology Server enriches search_terms with official synonyms
          No LLM  — authoritative NHS synonyms only
          Non-fatal — falls back to LLM terms if API unavailable
+
+Phase 2: Advanced RAG Retrieval uses the structured data to apply dynamic demographic, 
+         QOF, and exclusion shields before fetching context from ChromaDB.
 """
 import json
 import re
@@ -16,29 +19,40 @@ import sys
 import os
 import httpx
 from dotenv import load_dotenv
+
 load_dotenv()   
 
-sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
+# --- DYNAMIC PATHING ---
+# Dynamically locate the project root directory so the script works on any machine
+# regardless of where the terminal is opened.
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", ".."))
+sys.path.append(PROJECT_ROOT)
 
-from src.rag.retriever import advanced_retrieval
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
 from src.state import NICEState
 from src.utils.fhir_client import _get_headers, CONCEPT_TYPE_ROOTS, FHIR_BASE
+from src.rag.retriever import advanced_retrieval
 
-CHROMA_DB_DIR = "data/vectorstore/methodology_db_openai"
+# --- DYNAMIC DATABASE PATH ---
+# Points exactly to the GitHub folder structure: data/vectorstore/methodology_db_openai
+CHROMA_DB_DIR = os.path.join(PROJECT_ROOT, "data", "vectorstore", "methodology_db_openai")
 EMBEDDING_MODEL_NAME = "text-embedding-3-small"
 
-# -------------------------------------------------------------------
-# LLM — GPT-4o for clinical reasoning quality
-# -------------------------------------------------------------------
+# INITIALIZE MODELS & VECTOR DATABASE
+print("[*] Initializing OpenAI models & connecting to ChromaDB...")
+
+# We MUST use the exact same embedding model used during Colab ingestion
+embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL_NAME)
+vector_db = Chroma(persist_directory=CHROMA_DB_DIR, embedding_function=embeddings)
+
+# Initialize GPT-4o for clinical reasoning
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=1000)
 
-# -------------------------------------------------------------------
-# System Prompt — fully generic, no condition-specific knowledge
-# -------------------------------------------------------------------
+# LLM SYSTEM PROMPT & PARSING
+
 SYSTEM_PROMPT = """
 # ROLE
 You are a clinical informatics expert specializing in SNOMED CT and UK primary care coding. 
@@ -213,129 +227,85 @@ async def _enrich_with_nhs_synonyms(
 
 async def query_understanding_node(state: NICEState) -> dict:
     """
-    Node 1 + 1b: Parse any patient cohort description into structured state.
-
-    Node 1:  GPT-4o clinical reasoning — condition-agnostic
-    Node 1b: NHS Terminology Server synonym enrichment — no LLM
-
-    Input:  state["research_question"] — plain English cohort description
-    Output: all fields needed by downstream nodes, fully populated
+    The main entry point for Node 1 in the LangGraph pipeline.
+    Executes reasoning, advanced RAG retrieval, and synonym enrichment.
     """
     research_question = state["research_question"]
+    print(f"\n--- [PHASE 1] QUERY UNDERSTANDING STARTED ---")
+    print(f"[*] Processing Query: '{research_question}'")
 
-  
-    # ── LLM Call —  ───────────────────────────────────────
-    messages = [
-        SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(content=f"""
-Patient cohort description:
-{research_question}""")]
-
-    print("[query_understanding] Calling GPT-4o...")
+    # 1. LLM REASONING & DECOMPOSITION
+    messages = [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=research_question)]
     response = await llm.ainvoke(messages)
-    parsed  = _parse_llm_response(response.content)
-    cleaned = _validate_parsed_output(parsed, research_question)
+    parsed = _parse_llm_response(response.content)
+    cleaned_data = _validate_parsed_output(parsed, research_question)
 
     # Validate required demographic and QOF variables, falling back to "adult" if missing
-    target_demographic = parsed.get("target_demographic", "adult").lower()
-    qof_domain_prefix = parsed.get("qof_domain_prefix", "")
+    target_demographic = cleaned_data.get("target_demographic", "adult").lower()
+    qof_domain_prefix = cleaned_data.get("qof_domain_prefix", "")
 
-    # Log key outputs for debugging
-    print(f"[query_understanding] Primary condition  : "
-          f"{cleaned['primary_condition']}")
-    print(f"[query_understanding] Concept type       : "
-          f"{cleaned['concept_type']}")
-    print(f"[query_understanding] SNOMED hierarchy   : "
-          f"{cleaned['snomed_top_hierarchy']}")
-    print(f"[query_understanding] Guidelines found   : "
-          f"{cleaned['relevant_guidelines'] or 'None'}")
-    print(f"[query_understanding] Exclusions - diagnosis          : "
-          f"{cleaned['excluded_diagnoses']}")
-    print(f"[query_understanding] Exclusions - medications         : "
-          f"{cleaned['excluded_medications']}")
-    print(f"[query_understanding] Exclusions - observations         : "
-          f"{cleaned['excluded_observations']}")
-    print(f"[query_understanding] Validation sources : "
-          f"{cleaned['suggested_validation_sources']}")
-    print(f"[query_understanding] Search terms (LLM) : "
-          f"{cleaned['search_terms']}")
-    print(f"[query_understanding] relevant medications : "
-          f"{cleaned['relevant_medications']}")
-    print(f"[query_understanding] relevant observations : "
-          f"{cleaned['relevant_observations']}")
-
-    if cleaned["ambiguity_notes"]:
-        print(f"[query_understanding] ⚠️  AMBIGUITY: "
-              f"{cleaned['ambiguity_notes']}")
-
-    # Initialize your database connection
-    vector_db = Chroma(
-        persist_directory=CHROMA_DB_DIR, 
-        embedding_function=OpenAIEmbeddings(model=EMBEDDING_MODEL_NAME)
-    )
-
-    # 2. ADVANCED RAG RETRIEVAL (Your custom logic)
-    final_docs = advanced_retrieval(parsed, vector_db)
+    # 2. ADVANCED RAG RETRIEVAL
+    # Fetch targeted context chunks using the refined retriever module
+    final_docs = advanced_retrieval(cleaned_data, vector_db)
 
     # Build the context payload for the synthesis node
     rag_payload = ""
-    found_guidelines = set(parsed.get("relevant_guidelines", []))
+    found_guidelines = set(cleaned_data.get("relevant_guidelines", []))
     
     for doc in final_docs:
+        # Strip the absolute Colab Drive path to obtain a clean filename
         source = os.path.basename(doc.metadata.get('source', 'Unknown'))
         filename = source.replace('.pdf', '')
         found_guidelines.add(filename)
+        
+        # Format the chunk clearly for the LLM
         rag_payload += f"--- Source: {filename} ---\n{doc.page_content}\n\n"
 
-    # ------------------------------------------------------------------
-    # NODE 1b: NHS Synonym Enrichment
-    # ------------------------------------------------------------------
-    print("[query_understanding:1b] Enriching with NHS synonyms...")
-
+    # 3. NHS SYNONYM ENRICHMENT
+    print("\n--- [PHASE 3] ENRICHING SEARCH TERMS WITH NHS API ---")
     all_exclusions = (
-        cleaned["excluded_diagnoses"] + 
-        cleaned["excluded_medications"] + 
-        cleaned["excluded_observations"]
+        cleaned_data["excluded_diagnoses"] + 
+        cleaned_data["excluded_medications"] + 
+        cleaned_data["excluded_observations"]
     )
-
+    
     enriched_terms = await _enrich_with_nhs_synonyms(
-        initial_search_terms=cleaned["search_terms"],
-        primary_condition=cleaned["primary_condition"],
+        initial_search_terms=cleaned_data["search_terms"],
+        primary_condition=cleaned_data["primary_condition"],
         explicit_exclusions=all_exclusions,
-        concept_type=cleaned["concept_type"]
+        concept_type=cleaned_data["concept_type"]
     )
 
-    print(f"\n[query_understanding] ── Complete ──")
+    print("--- [NODE 1 COMPLETE] Data successfully prepared for Node 2 ---")
     print(f"[query_understanding] Final search terms : {len(enriched_terms +  cleaned["relevant_medications"]+ cleaned["relevant_observations"])}")
 
+    # Return the enriched state dictionary matching the NICEState TypedDict
     return {
-        # Core clinical reasoning outputs
-        "primary_condition":             cleaned["primary_condition"],
-        "concept_type":                  cleaned["concept_type"],
-        "snomed_top_hierarchy":          cleaned["snomed_top_hierarchy"],
-        "related_conditions":            cleaned["related_conditions"],
-        "excluded_diagnoses":            cleaned["excluded_diagnoses"],
-        "excluded_medications":          cleaned["excluded_medications"],
-        "excluded_observations":         cleaned["excluded_observations"],
-        "relevant_medications":          cleaned["relevant_medications"],
-        "relevant_observations":         cleaned["relevant_observations"],
-        #"relevant_guidelines":           cleaned["relevant_guidelines"],
-        "suggested_validation_sources":  cleaned["suggested_validation_sources"],
-        "ambiguity_notes":               cleaned["ambiguity_notes"],
-
-        # Enriched search terms — NHS-official synonyms added
+        "primary_condition":             cleaned_data["primary_condition"],
+        "concept_type":                  cleaned_data["concept_type"],
+        "snomed_top_hierarchy":          cleaned_data["snomed_top_hierarchy"],
+        "related_conditions":            cleaned_data["related_conditions"],
+        "excluded_diagnoses":            cleaned_data["excluded_diagnoses"],
+        "excluded_medications":          cleaned_data["excluded_medications"],
+        "excluded_observations":         cleaned_data["excluded_observations"],
+        "relevant_medications":          cleaned_data["relevant_medications"],
+        "relevant_observations":         cleaned_data["relevant_observations"],
+        "suggested_validation_sources":  cleaned_data["suggested_validation_sources"],
+        "ambiguity_notes":               cleaned_data["ambiguity_notes"],
+        
+        # Enriched fields
         "search_terms":                  enriched_terms,
-
-        # Initialise pipeline control fields
+        "relevant_guidelines":           list(found_guidelines),
+        
+        # Advanced RAG fields
+        "qof_domain_prefix":             qof_domain_prefix,
+        "target_demographic":            target_demographic,
+        "rag_context":                   rag_payload.strip(),
+        "rag_sources":                   list(found_guidelines),
+        
+        # Pipeline control fields
         "iteration_count":               0,
         "human_review_flag":             False,
         "human_feedback":                None,
-        "final_output":                  None,
-
-        "relevant_guidelines":           list(found_guidelines),
-        "rag_sources":                   list(found_guidelines),
-        #"rag_sources": list(set([os.path.basename(d.metadata.get("source", "")) for d in guideline_docs])),
-        "rag_context": rag_payload.strip(),
-        "qof_domain_prefix":             qof_domain_prefix,
-        "target_demographic":            target_demographic,
+        "final_output":                  None
     }

@@ -1,15 +1,27 @@
 import asyncio
-from main import app as clinical_graph # compiled LangGraph
+import os
+from dotenv import load_dotenv
+from supabase import create_client, Client
+
+load_dotenv()
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+try:
+    from main import app as clinical_graph
+except Exception:
+    clinical_graph = None
+
 import streamlit as st
 import pandas as pd
 import uuid
 from datetime import datetime
 from src.utils.dummy_data import DUMMY_STATE
-import uuid
 import io
 import json
 
-USE_DUMMY_DATA = True
+USE_DUMMY_DATA = False
 
 DUMMY_KEYWORDS = [
     "obesity", "diabetes", "hypertension", "t2dm", "type 2",
@@ -32,17 +44,20 @@ st.markdown("""
     .code-card { background-color:#FFFFFF;border:1px solid #E0E0E0;border-radius:8px;padding:16px;margin-bottom:12px; }
     .code-card-selected { background-color:#F5FAFF;border:1px solid #85B7EB;border-radius:8px;padding:16px;margin-bottom:12px; }
     .code-card-accepted { background-color:#FFFFFF;border:1px solid #97C459;border-radius:8px;padding:16px;margin-bottom:12px; }
+    .code-card-rejected { background-color:#FFFFFF;border:1px solid #E24B4A;border-radius:8px;padding:16px;margin-bottom:12px; }
     .code-card-skipped { background-color:#FAFAFA;border:1px solid #E0E0E0;border-radius:8px;padding:16px;margin-bottom:12px;opacity:0.6; }
+    .code-card-readonly { background-color:#F9F9F9;border:1px solid #E0E0E0;border-radius:8px;padding:16px;margin-bottom:12px; }
     .section-label { font-size:12px;font-weight:500;color:#888780;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px; }
     .metric-card { background-color:#F1EFE8;border-radius:8px;padding:12px 16px;text-align:center; }
     .metric-value { font-size:28px;font-weight:500;color:#2C2C2A; }
     .metric-label { font-size:12px;color:#5F5E5A;margin-top:4px; }
-    .thankyou { background-color:#EAF3DE;border:1px solid #97C459;border-radius:6px;padding:8px 14px;font-size:13px;color:#27500A;margin-top:10px;text-align:center;font-weight:500; }
     .decision-accepted { background-color:#EAF3DE;color:#27500A;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:500; }
     .decision-rejected { background-color:#FCEBEB;color:#791F1F;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:500; }
     .decision-skipped { background-color:#F1EFE8;color:#5F5E5A;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:500; }
     .error-empty { border:1px solid #E0E0E0;border-radius:12px;padding:3rem 2rem;text-align:center;background-color:#F9F9F9; }
     .footer-box { border-top:1px solid #E0E0E0;padding-top:1.5rem;margin-top:2rem;text-align:center; }
+    .audit-banner { background-color:#EAF3DE;border:1px solid #97C459;border-radius:8px;padding:16px;margin-bottom:16px; }
+    .summary-box { background-color:#F1EFE8;border-radius:8px;padding:16px;margin-bottom:16px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -54,16 +69,24 @@ if "last_query" not in st.session_state:
     st.session_state.last_query = ""
 if "reviews" not in st.session_state:
     st.session_state.reviews = {}
-if "feedback" not in st.session_state:
-    st.session_state.feedback = {}
-if "feedback_submitted" not in st.session_state:
-    st.session_state.feedback_submitted = {}
+if "reasons" not in st.session_state:
+    st.session_state.reasons = {}
+if "ratings" not in st.session_state:
+    st.session_state.ratings = {}
 if "selected_codes" not in st.session_state:
     st.session_state.selected_codes = {}
 if "submitted" not in st.session_state:
     st.session_state.submitted = False
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
+if "submission_summary" not in st.session_state:
+    st.session_state.submission_summary = None
+if "do_submit" not in st.session_state:
+    st.session_state.do_submit = False
+if "submit_error" not in st.session_state:
+    st.session_state.submit_error = None
+if "missing_reasons_count" not in st.session_state:
+    st.session_state.missing_reasons_count = 0
 
 def get_tier_badge(tier):
     if tier == "tier_1":
@@ -72,6 +95,39 @@ def get_tier_badge(tier):
         return '<span class="tier-2">Tier 2 - Review</span>'
     else:
         return '<span class="tier-3">Tier 3 - Supplementary</span>'
+
+def save_all_feedback_to_supabase(state, reviews, reasons, ratings):
+    saved = 0
+    failed = 0
+    justifications = state.get("justifications", [])
+    for j in justifications:
+        snomed_id = j["snomed_id"]
+        decision = reviews.get(snomed_id)
+        if not decision:
+            continue
+        try:
+            data = {
+                "session_id":         st.session_state.session_id,
+                "research_question":  state.get("research_question", ""),
+                "primary_condition":  state.get("primary_condition", ""),
+                "snomed_id":          snomed_id,
+                "preferred_term":     j.get("preferred_term", ""),
+                "tier":               j.get("tier", ""),
+                "confidence_score":   j.get("confidence_score", 0.0),
+                "decision":           decision,
+                "reason":             reasons.get(snomed_id, ""),
+                "rating":             ratings.get(snomed_id, 3),
+                "qof_match":          j.get("qof_match", False),
+                "is_nhsd_refset":     j.get("is_nhsd_refset", False),
+                "found_in_codelists": j.get("found_in_codelists", []),
+                "reviewer_id":        "clinician"
+            }
+            supabase.table("nice_feedback").insert(data).execute()
+            saved += 1
+        except Exception as e:
+            print(f"Supabase write failed for {snomed_id}: {e}")
+            failed += 1
+    return saved, failed
 
 def render_footer_credits():
     st.markdown("""
@@ -153,20 +209,20 @@ def render_query_summary(state):
             st.markdown("**Related conditions:**")
             for c in state["related_conditions"]:
                 st.markdown(f"- {c}")
-            for c in state["relevant_medications"]:
+            for c in state.get("relevant_medications", []):
                 st.markdown(f"- {c}")
-            for c in state["relevant_observations"]:
+            for c in state.get("relevant_observations", []):
                 st.markdown(f"- {c}")
         with col2:
             st.markdown("**Relevant guidelines:**")
             for g in state["relevant_guidelines"]:
                 st.markdown(f"- {g}")
             st.markdown("**Explicit exclusions:**")
-            for e in state["excluded_diagnoses"]:
+            for e in state.get("excluded_diagnoses", state.get("explicit_exclusions", [])):
                 st.markdown(f"- {e}")
-            for e in state["excluded_medications"]:
+            for e in state.get("excluded_medications", []):
                 st.markdown(f"- {e}")
-            for e in state["excluded_observations"]:
+            for e in state.get("excluded_observations", []):
                 st.markdown(f"- {e}")
         if state.get("ambiguity_notes"):
             st.markdown(
@@ -175,7 +231,6 @@ def render_query_summary(state):
             )
         st.markdown("**Expanded search terms used:**")
         st.markdown(", ".join(state["search_terms"]))
-
 
 def render_metrics(state):
     st.markdown('<p class="section-label">Summary</p>', unsafe_allow_html=True)
@@ -197,14 +252,14 @@ def render_metrics(state):
         st.markdown(f'<div class="metric-card"><div class="metric-value">{reviewed}/{len(justifications)}</div><div class="metric-label">Reviewed</div></div>', unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
 
-def render_bulk_toolbar(justifications):
-    st.markdown('<p class="section-label">Suggested codes - ranked by confidence</p>', unsafe_allow_html=True)
-    col1, col2, col3, col4, col5 = st.columns([2, 2, 1, 1, 1])
+def render_bulk_toolbar(justifications, tier_filter):
+    col1, col2, col3, col4, col5, col6 = st.columns([2, 1, 1, 1, 1, 1])
     with col1:
-        select_all = st.checkbox("Select all", key="select_all")
+        select_all = st.checkbox("Select all visible", key="select_all")
         if select_all:
             for j in justifications:
-                st.session_state.selected_codes[j["snomed_id"]] = True
+                if tier_filter == "All" or j["tier"] == tier_filter.lower().replace(" ", "_"):
+                    st.session_state.selected_codes[j["snomed_id"]] = True
         else:
             if st.session_state.get("prev_select_all", False):
                 for j in justifications:
@@ -212,51 +267,101 @@ def render_bulk_toolbar(justifications):
         st.session_state["prev_select_all"] = select_all
     selected_count = sum(1 for v in st.session_state.selected_codes.values() if v)
     with col2:
-        st.markdown(f'<div style="font-size:13px;color:#888780;padding-top:8px">{selected_count} of {len(justifications)} selected</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="font-size:13px;color:#888780;padding-top:8px">{selected_count} selected</div>', unsafe_allow_html=True)
     with col3:
-        if st.button("Accept selected", use_container_width=True):
+        if st.button("Accept", use_container_width=True):
             for snomed_id, selected in st.session_state.selected_codes.items():
                 if selected:
                     st.session_state.reviews[snomed_id] = "accepted"
             st.rerun()
     with col4:
-        if st.button("Reject selected", use_container_width=True):
+        if st.button("Reject", use_container_width=True):
             for snomed_id, selected in st.session_state.selected_codes.items():
                 if selected:
                     st.session_state.reviews[snomed_id] = "rejected"
             st.rerun()
     with col5:
-        if st.button("Skip selected", use_container_width=True):
+        if st.button("Skip", use_container_width=True):
             for snomed_id, selected in st.session_state.selected_codes.items():
                 if selected:
                     st.session_state.reviews[snomed_id] = "skipped"
             st.rerun()
 
-def render_code_cards(state):
+def render_code_cards(state, readonly=False):
     justifications = state.get("justifications", [])
-    render_bulk_toolbar(justifications)
+    total = len(justifications)
+
+    st.markdown('<p class="section-label">Suggested codes - ranked by confidence</p>', unsafe_allow_html=True)
+
+    if total > 10:
+        st.markdown(
+            f'<div class="warning-box">There are {total} codes to review. You do not need to review all of them. Focus on Tier 1 codes first and use Skip for codes you are unsure about.</div>',
+            unsafe_allow_html=True
+        )
+
+    col_filter, col_info = st.columns([2, 4])
+    with col_filter:
+        tier_filter = st.selectbox(
+            "Filter by tier:",
+            ["All", "Tier 1", "Tier 2", "Tier 3", "Unreviewed only"],
+            key="tier_filter"
+        )
+
+    tier_map = {
+        "All": None,
+        "Tier 1": "tier_1",
+        "Tier 2": "tier_2",
+        "Tier 3": "tier_3",
+        "Unreviewed only": "unreviewed"
+    }
+    selected_tier = tier_map[tier_filter]
+
+    filtered = []
     for j in justifications:
+        if selected_tier is None:
+            filtered.append(j)
+        elif selected_tier == "unreviewed":
+            if j["snomed_id"] not in st.session_state.reviews:
+                filtered.append(j)
+        elif j["tier"] == selected_tier:
+            filtered.append(j)
+
+    if not readonly:
+        render_bulk_toolbar(justifications, tier_filter)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    for j in filtered:
         snomed_id = j["snomed_id"]
         current = st.session_state.reviews.get(snomed_id, None)
         is_selected = st.session_state.selected_codes.get(snomed_id, False)
-        if current == "accepted":
+
+        if readonly:
+            card_class = "code-card-readonly"
+        elif current == "accepted":
             card_class = "code-card-accepted"
+        elif current == "rejected":
+            card_class = "code-card-rejected"
         elif current == "skipped":
             card_class = "code-card-skipped"
         elif is_selected:
             card_class = "code-card-selected"
         else:
             card_class = "code-card"
+
         st.markdown(f'<div class="{card_class}">', unsafe_allow_html=True)
         col_check, col_main, col_actions = st.columns([0.3, 4, 1])
+
         with col_check:
-            checked = st.checkbox(
-                label="select",
-                value=is_selected,
-                key=f"check_{snomed_id}",
-                label_visibility="collapsed"
-            )
-            st.session_state.selected_codes[snomed_id] = checked
+            if not readonly:
+                checked = st.checkbox(
+                    label="select",
+                    value=is_selected,
+                    key=f"check_{snomed_id}",
+                    label_visibility="collapsed"
+                )
+                st.session_state.selected_codes[snomed_id] = checked
+
         with col_main:
             tier_badge = get_tier_badge(j["tier"])
             qof_badge = '<span class="badge">QOF validated</span>' if j["qof_match"] else ""
@@ -269,74 +374,66 @@ def render_code_cards(state):
                 unsafe_allow_html=True
             )
             st.markdown(f"{j['justification_text']}")
-            
-            # Show the exact quote and the page reference
+
             quote = j.get("evidence_quote", "")
             page_ref = j.get("source_chunk", "N/A")
-            
             if quote and quote not in ["N/A", "No quote found"]:
                 st.markdown(f"> *\"{quote}\"*")
                 st.markdown(f'<div style="font-size:12px;color:#0C447C;font-weight:bold;">Location: {page_ref}</div>', unsafe_allow_html=True)
 
             st.markdown(f'<div style="font-size:12px;color:#0C447C;margin-top:4px">Source: {j["source_document"]}</div>', unsafe_allow_html=True)
+
+            if not readonly and current in ("accepted", "rejected"):
+                reason = st.text_area(
+                    f"Reason for {current}:",
+                    value=st.session_state.reasons.get(snomed_id, ""),
+                    key=f"reason_{snomed_id}",
+                    placeholder=f"Explain why you {current} this code...",
+                    height=80
+                )
+                st.session_state.reasons[snomed_id] = reason
+
+                rating = st.slider(
+                    "Confidence rating (1 = low, 5 = high):",
+                    min_value=1,
+                    max_value=5,
+                    value=st.session_state.ratings.get(snomed_id, 3),
+                    key=f"rating_{snomed_id}"
+                )
+                st.session_state.ratings[snomed_id] = rating
+
         with col_actions:
-            if current in ("accepted", "rejected", "skipped"):
+            if readonly:
                 if current == "accepted":
                     st.markdown('<span class="decision-accepted">Accepted</span>', unsafe_allow_html=True)
                 elif current == "rejected":
                     st.markdown('<span class="decision-rejected">Rejected</span>', unsafe_allow_html=True)
-                else:
+                elif current == "skipped":
                     st.markdown('<span class="decision-skipped">Skipped</span>', unsafe_allow_html=True)
+                else:
+                    st.markdown('<span style="font-size:12px;color:#888780">Not reviewed</span>', unsafe_allow_html=True)
             else:
-                if st.button("Accept", key=f"accept_{snomed_id}", use_container_width=True):
-                    st.session_state.reviews[snomed_id] = "accepted"
-                    st.rerun()
-                if st.button("Reject", key=f"reject_{snomed_id}", use_container_width=True):
-                    st.session_state.reviews[snomed_id] = "rejected"
-                    st.rerun()
-                if st.button("Skip", key=f"skip_{snomed_id}", use_container_width=True):
-                    st.session_state.reviews[snomed_id] = "skipped"
-                    st.rerun()
-        if current in ("accepted", "rejected"):
-            already_submitted = st.session_state.feedback_submitted.get(snomed_id, False)
-            if already_submitted:
-                st.markdown('<div class="thankyou">Thank you! Your feedback has been recorded.</div>', unsafe_allow_html=True)
-            else:
-                decision_label = "accepting" if current == "accepted" else "rejecting"
-                with st.container():
-                    reason = st.text_area(
-                        f"Reason for {decision_label}:",
-                        key=f"reason_{snomed_id}",
-                        placeholder=f"Explain why you {current} this code...",
-                        height=80
-                    )
-                    rating = st.slider(
-                        "Confidence rating (1 = low, 5 = high):",
-                        min_value=1,
-                        max_value=5,
-                        value=3,
-                        key=f"rating_{snomed_id}"
-                    )
-                    if st.button("Submit feedback", key=f"submit_feedback_{snomed_id}"):
-                        st.session_state.feedback[snomed_id] = {
-                            "timestamp": datetime.now().isoformat(),
-                            "session_id": st.session_state.session_id,
-                            "research_question": state["research_question"],
-                            "primary_condition": state["primary_condition"],
-                            "snomed_id": snomed_id,
-                            "preferred_term": j["preferred_term"],
-                            "tier": j["tier"],
-                            "confidence_score": j["confidence_score"],
-                            "decision": current,
-                            "reason": reason,
-                            "rating": rating,
-                            "qof_match": j["qof_match"],
-                            "is_nhsd_refset": j["is_nhsd_refset"],
-                            "found_in_codelists": j["found_in_codelists"],
-                            "reviewer_id": "clinician"
-                        }
-                        st.session_state.feedback_submitted[snomed_id] = True
+                if current in ("accepted", "rejected", "skipped"):
+                    if current == "accepted":
+                        st.markdown('<span class="decision-accepted">Accepted</span>', unsafe_allow_html=True)
+                    elif current == "rejected":
+                        st.markdown('<span class="decision-rejected">Rejected</span>', unsafe_allow_html=True)
+                    else:
+                        st.markdown('<span class="decision-skipped">Skipped</span>', unsafe_allow_html=True)
+                    if st.button("Undo", key=f"undo_{snomed_id}", use_container_width=True):
+                        del st.session_state.reviews[snomed_id]
                         st.rerun()
+                else:
+                    if st.button("Accept", key=f"accept_{snomed_id}", use_container_width=True):
+                        st.session_state.reviews[snomed_id] = "accepted"
+                        st.rerun()
+                    if st.button("Reject", key=f"reject_{snomed_id}", use_container_width=True):
+                        st.session_state.reviews[snomed_id] = "rejected"
+                        st.rerun()
+                    if st.button("Skip", key=f"skip_{snomed_id}", use_container_width=True):
+                        st.session_state.reviews[snomed_id] = "skipped"
+                        st.rerun()
+
         st.markdown('</div>', unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -372,20 +469,78 @@ def render_no_results(query):
         st.session_state.no_results = False
         st.session_state.last_query = ""
         st.session_state.reviews = {}
-        st.session_state.feedback = {}
-        st.session_state.feedback_submitted = {}
+        st.session_state.reasons = {}
+        st.session_state.ratings = {}
         st.session_state.selected_codes = {}
         st.rerun()
 
+def render_submission_summary(summary):
+    st.markdown("""
+    <div class="audit-banner">
+        <h3 style="margin:0 0 8px;color:#27500A">Submitted for audit successfully</h3>
+        <p style="margin:0;font-size:13px;color:#3B6D11">All feedback has been saved to the database.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1:
+        st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#27500A">{summary["accepted"]}</div><div class="metric-label">Accepted</div></div>', unsafe_allow_html=True)
+    with col2:
+        st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#791F1F">{summary["rejected"]}</div><div class="metric-label">Rejected</div></div>', unsafe_allow_html=True)
+    with col3:
+        st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#5F5E5A">{summary["skipped"]}</div><div class="metric-label">Skipped</div></div>', unsafe_allow_html=True)
+    with col4:
+        st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#888780">{summary["not_reviewed"]}</div><div class="metric-label">Not reviewed</div></div>', unsafe_allow_html=True)
+    with col5:
+        st.markdown(f'<div class="metric-card"><div class="metric-value" style="font-size:14px;color:#0C447C">{summary["session_id"][:8]}...</div><div class="metric-label">Session ID</div></div>', unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    accepted_justifications = [
+        j for j in summary["justifications"]
+        if st.session_state.reviews.get(j["snomed_id"]) == "accepted"
+    ]
+    if accepted_justifications:
+        df = pd.DataFrame([{
+            "SNOMED ID": j["snomed_id"],
+            "Preferred term": j["preferred_term"],
+            "Tier": j["tier"],
+            "Confidence": j["confidence_score"],
+            "QOF match": j["qof_match"],
+            "NHS Digital refset": j["is_nhsd_refset"],
+            "Source": j["source_document"]
+        } for j in accepted_justifications])
+        csv = df.to_csv(index=False)
+        st.download_button(
+            label="Download accepted codes as CSV",
+            data=csv,
+            file_name="nice_accepted_codes.csv",
+            mime="text/csv"
+        )
+
 def render_footer(state):
     st.divider()
+
+    if st.session_state.submitted:
+        return
+
+    justifications = state.get("justifications", [])
+    total = len(justifications)
+    reviewed = {k: v for k, v in st.session_state.reviews.items() if v in ("accepted", "rejected", "skipped")}
+    accepted_count = sum(1 for v in reviewed.values() if v == "accepted")
+    rejected_count = sum(1 for v in reviewed.values() if v == "rejected")
+    skipped_count = sum(1 for v in reviewed.values() if v == "skipped")
+    not_reviewed = total - len(reviewed)
+
+    missing_reasons = [
+        snomed_id for snomed_id, decision in reviewed.items()
+        if decision in ("accepted", "rejected") and not st.session_state.reasons.get(snomed_id, "").strip()
+    ]
+
     col1, col2 = st.columns([2, 2])
     with col1:
         if st.button("Export accepted codes", use_container_width=True):
-            accepted = [
-                j for j in state.get("justifications", [])
-                if st.session_state.reviews.get(j["snomed_id"]) == "accepted"
-            ]
+            accepted = [j for j in justifications if reviewed.get(j["snomed_id"]) == "accepted"]
             if accepted:
                 df = pd.DataFrame([{
                     "SNOMED ID": j["snomed_id"],
@@ -405,34 +560,84 @@ def render_footer(state):
                 )
             else:
                 st.warning("No accepted codes to export yet.")
+
     with col2:
         if st.button("Submit for audit", type="primary", use_container_width=True):
-            total = len(state.get("justifications", []))
-            reviewed = len([k for k, v in st.session_state.reviews.items() if v in ("accepted", "rejected", "skipped")])
-            if reviewed < total:
-                st.warning(f"Please review all codes before submitting. {reviewed}/{total} reviewed.")
+            if len(reviewed) == 0:
+                st.session_state.submit_error = "none_reviewed"
+            elif accepted_count == 0 and rejected_count == 0:
+                st.session_state.submit_error = "all_skipped"
+            elif missing_reasons:
+                st.session_state.submit_error = "missing_reasons"
+                st.session_state.missing_reasons_count = len(missing_reasons)
             else:
-                st.session_state.submitted = True
-                st.success("Submitted for audit. All decisions and feedback have been recorded.")
+                st.session_state.submit_error = None
+                st.session_state.do_submit = True
+            st.rerun()
 
-# --- 1. ADD THE HELPER FUNCTION HERE (Above main) ---
-def convert_to_excel(justifications_list):
-    """Converts the list of justified codes into an Excel file in memory."""
-    df = pd.DataFrame(justifications_list)
-    
-    if not df.empty:
-        # Filter and order the columns to make it look professional
-        display_columns = [
-            "snomed_id", "preferred_term", "category", "tier", 
-            "justification_text", "evidence_quote", "source_document", "source_chunk"
-        ]
-        df = df[[col for col in display_columns if col in df.columns]]
+    with col2:
+        if st.session_state.get("submit_error") == "none_reviewed":
+            st.error("You have not reviewed any codes. Please accept, reject or skip at least some codes before submitting. You do not need to review all codes -- skip the ones you are unsure about.")
+        elif st.session_state.get("submit_error") == "all_skipped":
+            st.error("All reviewed codes have been skipped. Please accept or reject at least one code.")
+        elif st.session_state.get("submit_error") == "missing_reasons":
+            st.warning(f"{st.session_state.get('missing_reasons_count', 0)} accepted or rejected codes have no reason. Reasons help improve the system over time.")
+            col_back, col_anyway = st.columns(2)
+            with col_back:
+                if st.button("Go back and add reasons"):
+                    st.session_state.submit_error = None
+                    st.rerun()
+            with col_anyway:
+                if st.button("Submit anyway"):
+                    st.session_state.submit_error = None
+                    st.session_state.do_submit = True
+                    st.rerun()
 
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Justified Codes')
-    return buffer.getvalue()
-# -----------------------------------------------------
+    if st.session_state.get("do_submit", False):
+        st.session_state.do_submit = False
+        saved, failed = save_all_feedback_to_supabase(
+            state,
+            st.session_state.reviews,
+            st.session_state.reasons,
+            st.session_state.ratings
+        )
+        if failed > 0:
+            st.warning(f"Submitted but {failed} records failed to save. Please contact the team.")
+        st.session_state.submitted = True
+        st.session_state.submission_summary = {
+            "accepted": accepted_count,
+            "rejected": rejected_count,
+            "skipped": skipped_count,
+            "not_reviewed": not_reviewed,
+            "session_id": st.session_state.session_id,
+            "justifications": justifications
+        }
+        st.rerun()
+
+    col1, col2 = st.columns([2, 2])
+    with col1:
+        buffer = io.BytesIO()
+        df = pd.DataFrame(state["justifications"])
+        if not df.empty:
+            display_columns = ["snomed_id", "preferred_term", "category", "tier",
+                               "justification_text", "evidence_quote", "source_document", "source_chunk"]
+            df = df[[col for col in display_columns if col in df.columns]]
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Justified Codes')
+        st.download_button(
+            label="Download output as Excel",
+            data=buffer.getvalue(),
+            file_name="NICE_clinical_codes.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    with col2:
+        json_string = json.dumps(state["justifications"], indent=4)
+        st.download_button(
+            label="Download output as JSON",
+            data=json_string,
+            file_name="NICE_clinical_codes.json",
+            mime="application/json"
+        )
 
 def main():
     render_header()
@@ -443,73 +648,64 @@ def main():
             st.warning("Please enter a research question before generating.")
             return
         st.session_state.reviews = {}
-        st.session_state.feedback = {}
-        st.session_state.feedback_submitted = {}
+        st.session_state.reasons = {}
+        st.session_state.ratings = {}
         st.session_state.selected_codes = {}
         st.session_state.submitted = False
+        st.session_state.submission_summary = None
         st.session_state.session_id = str(uuid.uuid4())
+        st.session_state.force_submit = False
         st.session_state.last_query = query
-        
-        # --- THE REAL LANGGRAPH PIPELINE ---
-        with st.spinner("Running clinical AI pipeline... (This may take 30-60 seconds)"):
-            try:
-                initial_state = {"research_question": query}
-                thread_config = {"configurable": {"thread_id": st.session_state.session_id}}
-                final_state = asyncio.run(clinical_graph.ainvoke(initial_state, config=thread_config))
-                
-                if final_state.get("justifications") and len(final_state["justifications"]) > 0:
-                    st.session_state.state = final_state
-                    st.session_state.no_results = False
-                else:
-                    st.session_state.state = None
-                    st.session_state.no_results = True
-                    
-            except Exception as e:
-                st.error(f"Pipeline encountered an error: {str(e)}")
+
+        if USE_DUMMY_DATA:
+            if query_has_results(query):
+                st.session_state.state = DUMMY_STATE
+                st.session_state.no_results = False
+            else:
                 st.session_state.state = None
                 st.session_state.no_results = True
+        else:
+            with st.spinner("Running clinical AI pipeline... (This may take 30-60 seconds)"):
+                try:
+                    initial_state = {"research_question": query}
+                    thread_config = {"configurable": {"thread_id": st.session_state.session_id}}
+                    final_state = asyncio.run(clinical_graph.ainvoke(initial_state, config=thread_config))
+                    if final_state.get("justifications") and len(final_state["justifications"]) > 0:
+                        st.session_state.state = final_state
+                        st.session_state.no_results = False
+                    else:
+                        st.session_state.state = None
+                        st.session_state.no_results = True
+                except Exception as e:
+                    st.error(f"Pipeline encountered an error: {str(e)}")
+                    st.session_state.state = None
+                    st.session_state.no_results = True
 
     if st.session_state.no_results:
         render_no_results(st.session_state.last_query)
         render_footer_credits()
     elif st.session_state.state is not None:
         state = st.session_state.state
-        render_pipeline_status(no_results=False)
-        st.markdown("<br>", unsafe_allow_html=True)
-        render_query_summary(state)
-        st.markdown("<br>", unsafe_allow_html=True)
-        render_metrics(state)
-        st.markdown(
-            '<div class="warning-box">These suggestions are AI-generated and require expert clinical review before use in any NICE guideline or analysis.</div>',
-            unsafe_allow_html=True
-        )
-        render_code_cards(state)
-        
-        # --- 2. ADD THE DOWNLOAD BUTTONS HERE ---
-        st.markdown("### 📥 Export Results")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            excel_data = convert_to_excel(state["justifications"])
-            st.download_button(
-                label="📊 Download Output as Excel",
-                data=excel_data,
-                file_name="NICE_clinical_codes.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+        if st.session_state.submitted and st.session_state.submission_summary:
+            render_pipeline_status(no_results=False)
+            st.markdown("<br>", unsafe_allow_html=True)
+            render_submission_summary(st.session_state.submission_summary)
+            render_code_cards(state, readonly=True)
+            render_footer_credits()
+        else:
+            render_pipeline_status(no_results=False)
+            st.markdown("<br>", unsafe_allow_html=True)
+            render_query_summary(state)
+            st.markdown("<br>", unsafe_allow_html=True)
+            render_metrics(state)
+            st.markdown(
+                '<div class="warning-box">These suggestions are AI-generated and require expert clinical review before use in any NICE guideline or analysis.</div>',
+                unsafe_allow_html=True
             )
-            
-        with col2:
-            json_string = json.dumps(state["justifications"], indent=4)
-            st.download_button(
-                label="📥 Download Output as JSON",
-                data=json_string,
-                file_name="NICE_clinical_codes.json",
-                mime="application/json"
-            )
-        # ----------------------------------------
-        
-        render_footer(state)
-        render_footer_credits()
+            render_code_cards(state, readonly=False)
+            render_footer(state)
+            render_footer_credits()
     else:
         render_footer_credits()
 

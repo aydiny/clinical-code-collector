@@ -43,6 +43,11 @@ DUMMY_STATE: NICEState = {
         "Diabetic with hypertension"
     ],
     "ambiguity_notes": "Cohort description does not specify BMI threshold for obesity. Recommend clarifying whether BMI 30 or 35 is required.",
+    "relevant_medications": ["Metformin", "GLP-1 receptor agonists", "SGLT2 inhibitors"],
+    "relevant_observations": ["HbA1c", "BMI", "Blood pressure", "eGFR"],
+    "excluded_diagnoses": ["Type 1 diabetes mellitus", "Secondary hypertension", "Gestational diabetes"],
+    "excluded_medications": ["Insulin (Type 1 use)", "Corticosteroids causing secondary diabetes"],
+    "excluded_observations": ["HbA1c below diagnostic threshold"],
 
     "candidate_codes": [
         {

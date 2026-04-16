@@ -63,6 +63,7 @@ def advanced_retrieval(extracted_info: dict, vector_db: Chroma) -> list:
     
     primary = extracted_info.get('primary_condition', '')
     related_conditions = extracted_info.get('related_conditions', [])
+    relevant_medications = extracted_info.get('relevant_medications', []) # NEW: Extract medications
     qof_prefix = extracted_info.get('qof_domain_prefix', '')
     target_demographic = extracted_info.get('target_demographic', 'adult').lower()
     
@@ -132,6 +133,21 @@ def advanced_retrieval(extracted_info: dict, vector_db: Chroma) -> list:
             fetch_k=10,
             lambda_mult=0.5,
             filter=clinical_search_filter
+        )
+        all_retrieved_documents.extend(docs)
+
+    # --- QUERY 4: Pharmacological Treatments & Medications (NEW) ---
+    for med in relevant_medications:
+        if not med.strip(): continue
+        # Creating a highly targeted query to fetch dosage, side effects, and contraindications
+        med_query = f"{demo_prefix} pharmacological treatment, dosage, contraindications, side effects, adverse events for {med}"
+        print(f"    -> Querying Vector DB: '{med_query}' (Medication Filter)")
+        docs = vector_db.max_marginal_relevance_search(
+            med_query,
+            k=3,  # Keeping 'k' small (3) to pull only the most relevant drug info without bloating the context
+            fetch_k=10,
+            lambda_mult=0.5,
+            filter=clinical_search_filter # We only search within the relevant disease guidelines!
         )
         all_retrieved_documents.extend(docs)
         

@@ -34,8 +34,8 @@ GROUNDING RULES:
 
 JSON OUTPUT STRUCTURE:
 You must format your response EXACTLY as a JSON object with the following keys:
-- 'justification': Your clinical reasoning. If no chunk mentions it, write "No direct guideline evidence found."
-- 'quote': The direct quote from the text.
+- 'justification': Explain WHY a chunk is relevant for the justification of the SNOMED code in the final list. If no chunk is relevant , write "No direct guideline evidence found."
+- 'quote': The direct quote from the chunk.
 - 'page': The exact page number from the <CHUNK> tag's 'page' attribute. (mark "unknown" if you do not have this).
 - 'source_file': The exact filename from the <CHUNK> tag's 'source' attribute. (Leave blank if no evidence found).
 """

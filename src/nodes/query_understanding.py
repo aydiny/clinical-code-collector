@@ -277,8 +277,8 @@ async def query_understanding_node(state: NICEState) -> dict:
     )
 
     print("--- [NODE 1 COMPLETE] Data successfully prepared for Node 2 ---")
-    print(f"[query_understanding] Final search terms : {len(enriched_terms +  cleaned["relevant_medications"]+ cleaned["relevant_observations"])}")
-
+    print(f"[query_understanding] Final search terms : {len(enriched_terms + cleaned_data['relevant_medications'] + cleaned_data['relevant_observations'])}")
+         
     # Return the enriched state dictionary matching the NICEState TypedDict
     return {
         "primary_condition":             cleaned_data["primary_condition"],

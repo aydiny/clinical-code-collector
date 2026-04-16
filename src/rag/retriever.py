@@ -21,7 +21,7 @@ QOF_FILE = "qof_combined.pdf"
 
 # ADVANCED RAG UTILITIES
 
-def get_relevant_pdf(condition_name: str, pdf_folder: str = "pdf_docs") -> str:
+def get_relevant_pdf(condition_name: str, pdf_folder: str = PDF_DOCS_DIR) -> str:
     """
     SMART DOCUMENT ROUTER:
     Checks the exact dictionary mapping. If not found, dynamically scans 

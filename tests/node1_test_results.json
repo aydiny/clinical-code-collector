@@ -1,0 +1,17 @@
+[
+  {
+    "id": "TC1",
+    "status": "PASS"
+  },
+  {
+    "id": "TC2",
+    "status": "PASS"
+  },
+  {
+    "id": "TC3",
+    "status": "FAIL",
+    "failures": [
+      "concept_type: expected 'mixed', got 'diagnosis'"
+    ]
+  }
+]

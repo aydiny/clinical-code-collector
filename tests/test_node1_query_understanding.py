@@ -111,12 +111,12 @@ def validate_output(result: dict, expect: dict, test_id: str) -> list[str]:
 
     # explicit_exclusions
     if "exclusions_must_contain" in expect:
-        exclusions_text = " ".join(result.get("explicit_exclusions", [])).lower()
+        exclusions_text = " ".join(result.get("excluded_diagnoses", [])).lower()
         for keyword in expect["exclusions_must_contain"]:
             if keyword.lower() not in exclusions_text:
                 failures.append(
                     f"explicit_exclusions missing keyword '{keyword}'. "
-                    f"Got: {result.get('explicit_exclusions')}"
+                    f"Got: {result.get('excluded_diagnoses')}"
                 )
 
     # relevant_guidelines
@@ -152,7 +152,7 @@ def print_result(result: dict):
     print(f"  concept_type        : {result.get('concept_type')}")
     print(f"  snomed_top_hierarchy: {result.get('snomed_top_hierarchy')}")
     print(f"  relevant_guidelines : {result.get('relevant_guidelines')}")
-    print(f"  explicit_exclusions : {result.get('explicit_exclusions')}")
+    print(f"  excluded_diagnoses : {result.get('excluded_diagnoses')}")
     print(f"  validation_sources  : {result.get('suggested_validation_sources')}")
     print(f"  search_terms ({len(result.get('search_terms', []))}) : "
           f"{result.get('search_terms')}")
@@ -165,19 +165,6 @@ async def run_tests():
     print("=" * 65)
     print("  NODE 1 TEST SUITE — Query Understanding + Synonym Enrichment")
     print("=" * 65)
-
-    # #region agent log (debug-1d1a0d)
-    _dbg("A", "tests/test_node1_query_understanding.py:run_tests", "runtime context", {
-        "python_executable": sys.executable,
-        "python_version": sys.version.split()[0],
-        "cwd": os.getcwd(),
-        "project_root": os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "sys_path_head": sys.path[:5],
-        "openai_api_key_present": bool(os.getenv("OPENAI_API_KEY")),
-        "vectorstore_exists": os.path.exists(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "vectorstore", "nice_guidelines")),
-    })
-    # #endregion
-
     passed  = 0
     failed  = 0
     skipped = 0
@@ -194,14 +181,6 @@ async def run_tests():
             initial_state = {
                 "research_question": tc["research_question"]
             }
-
-            # #region agent log (debug-1d1a0d)
-            _dbg("B", "tests/test_node1_query_understanding.py:loop", "starting test case", {
-                "test_id": tc.get("id"),
-                "label": tc.get("label"),
-                "question_preview": (tc.get("research_question") or "")[:120],
-            })
-            # #endregion
 
             result = await query_understanding_node(initial_state)
 
@@ -226,14 +205,6 @@ async def run_tests():
         except Exception as e:
             print(f"\n  💥 ERROR: {type(e).__name__}: {e}")
             traceback.print_exc()
-            # #region agent log (debug-1d1a0d)
-            _dbg("C", "tests/test_node1_query_understanding.py:except", "test case raised exception", {
-                "test_id": tc.get("id"),
-                "exc_type": type(e).__name__,
-                "exc_message": str(e),
-                "traceback": traceback.format_exc()[-2000:],
-            })
-            # #endregion
             skipped += 1
             results.append({"id": tc["id"], "status": "ERROR", "error": str(e)})
 

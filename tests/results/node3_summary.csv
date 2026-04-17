@@ -1,0 +1,4 @@
+test_case,total,passed,failed,routing,t1,t2,t3,human_review_flagged
+TC1_HFrEF,11,11,0,loop_back,9,1,0,False
+TC2_T2DM,13,13,0,proceed,13,0,0,False
+TC3_AF,12,12,0,loop_back,8,1,0,False

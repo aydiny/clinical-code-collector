@@ -12,8 +12,6 @@ from src.nodes.query_understanding import query_understanding_node
 from src.nodes.snomed_search import snomed_search_node
 from src.nodes.validator import validator_node
 from src.nodes.justification import justification_node
-from src.nodes.human_review import human_review_node
-
 
 # --- Routing function: Validator → loop back OR proceed ---
 def route_after_validator(state: NICEState) -> str:
@@ -39,7 +37,7 @@ def build_graph():
     graph.add_node("snomed_search",       snomed_search_node)
     graph.add_node("validator",           validator_node)
     graph.add_node("justification",       justification_node)
-    graph.add_node("human_review",        human_review_node) 
+
 
     # Entry point
     graph.set_entry_point("query_understanding")
@@ -58,15 +56,12 @@ def build_graph():
         }
     )
 
-    # Human-in-the-loop: interrupt_before fires here
-    graph.add_edge("justification", "human_review")
-    graph.add_edge("human_review",  END)
+    graph.add_edge("justification", END)
 
     # Compile with memory checkpointer (enables interrupt_before)
     checkpointer = MemorySaver()
     return graph.compile(
         checkpointer=checkpointer,
-        interrupt_before=["human_review"]   # pauses here for human review
     )
 
 

@@ -133,7 +133,7 @@ def save_all_feedback_to_supabase(state, reviews, reasons, ratings):
 def render_footer_credits():
     st.markdown("""
     <div class="footer-box">
-        <p style="font-size:13px;color:#5F5E5A;margin-bottom:4px">This project was created by Farhio, Angelo, Lemmy, Bihter, Aydin and Mohan</p>
+        <p style="font-size:13px;color:#5F5E5A;margin-bottom:4px">This project was created by LAB FAM</p>
         <p style="font-size:12px;color:#888780;margin-bottom:12px">University of Cambridge - 2025</p>
         <div style="display:flex;align-items:center;justify-content:center;gap:16px">
             <div style="background:#003087;color:#fff;font-size:11px;font-weight:700;padding:3px 8px;border-radius:3px">NHS</div>
@@ -169,7 +169,7 @@ def render_query_input():
     with col1:
         query = st.text_input(
             label="Research question input",
-            value=st.session_state.last_query if st.session_state.last_query else "Obesity with type 2 diabetes and hypertension",
+            value=st.session_state.last_query if st.session_state.last_query else "Obesity with type 2 diabetes",
             placeholder="Enter a patient cohort description...",
             label_visibility="collapsed",
             key="query_input"

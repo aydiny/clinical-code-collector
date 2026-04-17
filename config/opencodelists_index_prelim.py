@@ -66,11 +66,11 @@ OPENCODELISTS_INDEX = {
 
     # ── Diabetes mellitus ────────────────────────────────────────────────────
     "diabetes mellitus": [
-        {
-            "name": "NHSD Diabetes Mellitus Codes",
-            "org":  "nhsd-primary-care-domain-refsets",
-            "url":  "https://www.opencodelists.org/codelist/nhsd-primary-care-domain-refsets/dm_cod/20250912/download.csv",
-        },
+        #{
+        #    "name": "NHSD Diabetes Mellitus Codes",
+        #    "org":  "nhsd-primary-care-domain-refsets",
+        #    "url":  "https://www.opencodelists.org/codelist/nhsd-primary-care-domain-refsets/dm_cod/20250912/download.csv",
+        #},
         {
             "name": "OpenSAFELY Diabetes (SNOMED)",
             "org":  "opensafely",
@@ -78,11 +78,11 @@ OPENCODELISTS_INDEX = {
         },
     ],
     "diabetes": [
-        {
-            "name": "NHSD Diabetes Mellitus Codes",
-            "org":  "nhsd-primary-care-domain-refsets",
-            "url":  "https://www.opencodelists.org/codelist/nhsd-primary-care-domain-refsets/dm_cod/20250912/download.csv",
-        },
+        #{
+        #    "name": "NHSD Diabetes Mellitus Codes",
+        #    "org":  "nhsd-primary-care-domain-refsets",
+        #    "url":  "https://www.opencodelists.org/codelist/nhsd-primary-care-domain-refsets/dm_cod/20250912/download.csv",
+        #},
         {
             "name": "OpenSAFELY Diabetes (SNOMED)",
             "org":  "opensafely",
@@ -92,11 +92,11 @@ OPENCODELISTS_INDEX = {
 
     # ── Type 2 diabetes ──────────────────────────────────────────────────────
     "type 2 diabetes": [
-        {
-            "name": "NHSD Type 2 Diabetes Codes",
-            "org":  "nhsd-primary-care-domain-refsets",
-            "url":  "https://www.opencodelists.org/codelist/nhsd-primary-care-domain-refsets/dmtype2_cod/20250912/download.csv",
-        },
+        #{
+        #    "name": "NHSD Type 2 Diabetes Codes",
+        #    "org":  "nhsd-primary-care-domain-refsets",
+        #    "url":  "https://www.opencodelists.org/codelist/nhsd-primary-care-domain-refsets/dmtype2_cod/20250912/download.csv",
+        #},
         {
             "name": "OpenSAFELY Diabetes (SNOMED)",
             "org":  "opensafely",
@@ -104,11 +104,11 @@ OPENCODELISTS_INDEX = {
         },
     ],
     "t2dm": [
-        {
-            "name": "NHSD Type 2 Diabetes Codes",
-            "org":  "nhsd-primary-care-domain-refsets",
-            "url":  "https://www.opencodelists.org/codelist/nhsd-primary-care-domain-refsets/dmtype2_cod/20250912/download.csv",
-        },
+        #{
+        #    "name": "NHSD Type 2 Diabetes Codes",
+        #    "org":  "nhsd-primary-care-domain-refsets",
+        #    "url":  "https://www.opencodelists.org/codelist/nhsd-primary-care-domain-refsets/dmtype2_cod/20250912/download.csv",
+        #},
         {
             "name": "OpenSAFELY Diabetes (SNOMED)",
             "org":  "opensafely",
@@ -116,11 +116,11 @@ OPENCODELISTS_INDEX = {
         },
     ],
     "type 2 diabetes mellitus": [
-        {
-            "name": "NHSD Type 2 Diabetes Codes",
-            "org":  "nhsd-primary-care-domain-refsets",
-            "url":  "https://www.opencodelists.org/codelist/nhsd-primary-care-domain-refsets/dmtype2_cod/20250912/download.csv",
-        },
+        #{
+        #    "name": "NHSD Type 2 Diabetes Codes",
+        #    "org":  "nhsd-primary-care-domain-refsets",
+        #    "url":  "https://www.opencodelists.org/codelist/nhsd-primary-care-domain-refsets/dmtype2_cod/20250912/download.csv",
+        #},
         {
             "name": "OpenSAFELY Diabetes (SNOMED)",
             "org":  "opensafely",
@@ -130,11 +130,11 @@ OPENCODELISTS_INDEX = {
 
     # ── Hypertension ─────────────────────────────────────────────────────────
     "hypertension": [
-        {
-            "name": "NHSD Hypertension Diagnosis Codes",
-            "org":  "nhsd-primary-care-domain-refsets",
-            "url":  "https://www.opencodelists.org/codelist/nhsd-primary-care-domain-refsets/hyp_cod/20250912/download.csv",
-        },
+        #{
+        #    "name": "NHSD Hypertension Diagnosis Codes",
+        #    "org":  "nhsd-primary-care-domain-refsets",
+        #    "url":  "https://www.opencodelists.org/codelist/nhsd-primary-care-domain-refsets/hyp_cod/20250912/download.csv",
+        #},
         {
             "name": "OpenSAFELY Hypertension (SNOMED)",
             "org":  "opensafely",
@@ -142,11 +142,11 @@ OPENCODELISTS_INDEX = {
         },
     ],
     "high blood pressure": [
-        {
-            "name": "NHSD Hypertension Diagnosis Codes",
-            "org":  "nhsd-primary-care-domain-refsets",
-            "url":  "https://www.opencodelists.org/codelist/nhsd-primary-care-domain-refsets/hyp_cod/20250912/download.csv",
-        },
+        #{
+        #    "name": "NHSD Hypertension Diagnosis Codes",
+        #    "org":  "nhsd-primary-care-domain-refsets",
+        #    "url":  "https://www.opencodelists.org/codelist/nhsd-primary-care-domain-refsets/hyp_cod/20250912/download.csv",
+        #},
         {
             "name": "OpenSAFELY Hypertension (SNOMED)",
             "org":  "opensafely",

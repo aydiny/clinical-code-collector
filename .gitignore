@@ -41,7 +41,14 @@ src/rag/retriever_prod.py
 src/state_prod.py
 
 tests/
-tools/
+
+tools/get_relationships_mcp.py
+tools/opencodelists_mcp.py
+tools/snomed_mcp.py
+tools/trud_data.py
+tools/trud_lookup.py
+tools/trud_mcp.py
+
 check_urls.py
 debug_trud.py
 MOHAN_README.md

@@ -27,6 +27,7 @@ src/nodes/query_understanding_test_v0.1.py
 src/nodes/query_understanding_test_v0.2.py
 src/nodes/query_understanding_test_v0.2py
 src/nodes/query_understanding_v0.3.py
+src/nodes/human_review.py
 
 src/nodes/snomed_search_prelim.py
 src/nodes/validator_prelim.py
@@ -63,3 +64,6 @@ config/opencodelists_index_rev2
 config/trud_refset_index.py
 
 vector_db/methodology_db/
+
+methodology_db_openai.zip
+test_opencodeslist.py

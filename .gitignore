@@ -11,3 +11,52 @@ assets/NHS 10mm - RGB Blue on white.jpg
 assets/NHS 10mm - RGB Black.jpg
 assets/NHS 10mm - RGB Blue.jpg
 
+#ignored scripts
+scripts/build_daar_index.py
+scripts/build_rag_index_0.0.py
+scripts/build_rag_index_OpenAI.py
+scripts/build_refsets_from_downloads.py
+scripts/build_refsets_from_opencodelists.py
+scripts/test_nhs_fhir_access.py
+
+#ignored nodes
+src/nodes/query_understanding_bihter.py
+src/nodes/query_understanding_org.py
+src/nodes/query_understanding_prelim.py
+src/nodes/query_understanding_test_v0.1.py
+src/nodes/query_understanding_test_v0.2.py
+src/nodes/query_understanding_v0.3.py
+
+src/nodes/snomed_search_prelim.py
+src/nodes/validator_prelim.py
+src/nodes/validator_v01.py
+
+#ignored rag
+src/rag/retriever_OpenAI.py
+src/rag/retriever_org.py
+src/rag/retriever_prod.py
+
+src/state_prod.py
+
+tests/
+tools/
+check_urls.py
+debug_trud.py
+MOHAN_README.md
+test_diagnose_fhir.py
+test_opencodelist.py
+vector_db_v2.zip
+vector_db.zip
+heart_failure_justifications.json
+
+data/raw/trud/
+data/trud/
+data/test_cases/
+data/vectorstore/methodology_db/
+data/vectorstore/methodology_db_openai/
+methodology_pdfs/
+
+config/opencodelists_index_prelim.py
+config/opencodelists_index_rev2.py
+config/trud_refset_index.py
+

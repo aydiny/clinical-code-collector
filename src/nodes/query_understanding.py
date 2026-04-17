@@ -38,18 +38,16 @@ from src.rag.retriever import advanced_retrieval
 
 # --- DYNAMIC DATABASE PATH ---
 # Points exactly to the GitHub folder structure: data/vectorstore/methodology_db_openai
-CHROMA_DB_DIR = os.path.join(PROJECT_ROOT, "data", "vectorstore", "methodology_db_openai")
-EMBEDDING_MODEL_NAME = "text-embedding-3-small"
+#CHROMA_DB_DIR = os.path.join(PROJECT_ROOT, "data", "vectorstore", "methodology_db_openai")
+#EMBEDDING_MODEL_NAME = "text-embedding-3-small"
 
 # INITIALIZE MODELS & VECTOR DATABASE
-print("[*] Initializing OpenAI models & connecting to ChromaDB...")
+#print("[*] Initializing OpenAI models & connecting to ChromaDB...")
 
 # We MUST use the exact same embedding model used during Colab ingestion
-embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL_NAME)
-vector_db = Chroma(persist_directory=CHROMA_DB_DIR, embedding_function=embeddings)
+#embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL_NAME)
+#vector_db = Chroma(persist_directory=CHROMA_DB_DIR, embedding_function=embeddings)
 
-# Initialize GPT-4o for clinical reasoning
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=1000)
 
 # LLM SYSTEM PROMPT & PARSING
 
@@ -59,7 +57,9 @@ You are a clinical informatics expert specializing in SNOMED CT and UK primary c
 Your task is to parse a plain English patient cohort description into a structured JSON object for an automated SNOMED CT search pipeline.
 
 # CLINICAL REASONING INSTRUCTIONS
-Use your medical expertise to infer standard pharmacological treatments, relevant lab results, and related co-morbidities, even if the user does not explicitly state them. 
+1. INFER ATTRIBUTES: Use your medical expertise to infer standard pharmacological treatments, relevant lab results, and related co-morbidities, even if the user does not explicitly state them. 
+2. CONTRASTIVE EXCLUSIONS (CRITICAL): You must proactively identify and exclude direct clinical opposites, mutually exclusive subtypes, or easily confused variants of the primary condition. (e.g., If the condition is Type 2 Diabetes, you MUST explicitly exclude "Type 1", "gestational", etc. If the condition is HFrEF, you MUST explicitly exclude "HFpEF". If the condition is "obese", you MUST explicitly exclude "nonobese").
+3. LEXICAL EXPANSION (CRITICAL): Downstream systems rely on exact string matching. For every inclusion or exclusion term, you MUST generate its common formatting variations as separate array items. This includes hyphenated vs. unhyphenated, spaced vs. unspaced, and Arabic vs. Roman numerals (e.g., if excluding non-obese, you must output ["non-obese", "nonobese", "non obese"]. If including Type 2, output ["Type 2", "Type II", "Type-2"]).
 
 # FIELD DEFINITIONS & RULES
 
@@ -77,9 +77,9 @@ Use your medical expertise to infer standard pharmacological treatments, relevan
 * relevant_observations: Array of related lab tests, imaging, or vital signs (e.g., "HbA1c"). Empty if none.
 
 ## 3. Exclusions (What to Filter Out)
-* excluded_diagnoses: Array of substrings to reject (e.g., "Type 1", "preserved"). CRITICAL: Must NOT include the primary condition.
-* excluded_medications: Array of substrings to reject false-positive drug matches. Do NOT put indicated treatments here.
-* excluded_observations: Array of substrings to reject false-positive lab matches.
+* excluded_diagnoses: Array of specific substrings to reject false positive diagnoses. Based on your Contrastive Exclusions reasoning, list the mutually exclusive subtypes here. You MUST apply Lexical Expansion to include all spelling variants (e.g., ["non-obese", "nonobese", "HFpEF", "Type 1", "Type I"]). CRITICAL: Must NOT include the primary condition itself.
+* excluded_medications: Array of substrings to reject false positive medications.  Do NOT put "relevant_medications" here.
+* excluded_observations: Array ofsubstrings to reject false positive lab matches. Do NOT put "relevant_observations" here.
 
 ## 4. Metadata & Validation
 * relevant_guidelines: Array of highly confident NICE/NHS guidelines (e.g., "NICE NG106"). Empty [] if unsure. Do not hallucinate.
@@ -165,8 +165,8 @@ def _validate_parsed_output(parsed: dict, research_question: str) -> dict:
         "snomed_top_hierarchy":          parsed.get("snomed_top_hierarchy",
                                                     "Clinical Finding"),
         "related_conditions":            parsed.get("related_conditions", []),
-        "relevant_observations":         parsed.get("relevant_observations"),
-        "relevant_medications":          parsed.get("relevant_medications"),
+        "relevant_observations":         parsed.get("relevant_observations", []),
+        "relevant_medications":          parsed.get("relevant_medications", []),
         "excluded_diagnoses":            parsed.get("excluded_diagnoses", []),
         "excluded_medications":          parsed.get("excluded_medications", []),
         "excluded_observations":         parsed.get("excluded_observations", []),
@@ -234,6 +234,9 @@ async def query_understanding_node(state: NICEState) -> dict:
     print(f"\n--- [PHASE 1] QUERY UNDERSTANDING STARTED ---")
     print(f"[*] Processing Query: '{research_question}'")
 
+    # Initialize GPT-4o for clinical reasoning
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=1000)
+
     # 1. LLM REASONING & DECOMPOSITION
     messages = [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=research_question)]
     response = await llm.ainvoke(messages)
@@ -244,22 +247,9 @@ async def query_understanding_node(state: NICEState) -> dict:
     target_demographic = cleaned_data.get("target_demographic", "adult").lower()
     qof_domain_prefix = cleaned_data.get("qof_domain_prefix", "")
 
-    # 2. ADVANCED RAG RETRIEVAL
-    # Fetch targeted context chunks using the refined retriever module
-    final_docs = advanced_retrieval(cleaned_data, vector_db)
-
     # Build the context payload for the synthesis node
-    rag_payload = ""
-    found_guidelines = set(cleaned_data.get("relevant_guidelines", []))
     
-    for doc in final_docs:
-        # Strip the absolute Colab Drive path to obtain a clean filename
-        source = os.path.basename(doc.metadata.get('source', 'Unknown'))
-        filename = source.replace('.pdf', '')
-        found_guidelines.add(filename)
-        
-        # Format the chunk clearly for the LLM
-        rag_payload += f"--- Source: {filename} ---\n{doc.page_content}\n\n"
+    found_guidelines = set(cleaned_data.get("relevant_guidelines", []))
 
     # 3. NHS SYNONYM ENRICHMENT
     print("\n--- [PHASE 3] ENRICHING SEARCH TERMS WITH NHS API ---")
@@ -300,7 +290,6 @@ async def query_understanding_node(state: NICEState) -> dict:
         # Advanced RAG fields
         "qof_domain_prefix":             qof_domain_prefix,
         "target_demographic":            target_demographic,
-        "rag_context":                   rag_payload.strip(),
         "rag_sources":                   list(found_guidelines),
         
         # Pipeline control fields

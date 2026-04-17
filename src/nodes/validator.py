@@ -165,7 +165,7 @@ async def _validate_single_code(
 
     if category == "Diagnosis":
         # Semantic overlap check
-        if semantic_score >= 0.8: score += 0.20
+        if semantic_score >= 0.6: score += 0.20
         elif semantic_score >= 0.5: score += 0.10
         
         # Clinical course check (acute vs chronic)
@@ -178,10 +178,10 @@ async def _validate_single_code(
 
     elif category in ["Medication", "Observation"]:
         # Semantic boost for medications and observations
-        if semantic_score >= 0.80: score += 0.20
-        elif semantic_score >= 0.60: score += 0.10
+        if semantic_score >= 0.6: score += 0.20
+        elif semantic_score >= 0.5: score += 0.10
         
-        if len(found_in_names) == 0:
+        if len(found_in_names) == 0: # base score for medicines
             score += 0.30
         else:
             score += 0.50

@@ -10,14 +10,27 @@ import os
 import json
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
 
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_community.vectorstores import Chroma
 from src.state import NICEState, Justification, ValidatedCode
+from src.rag.retriever_by_code import retrieve_context_for_code
 
-# -------------------------------------------------------------------
-# LLM
-# -------------------------------------------------------------------
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=1000)
+# --- DYNAMIC PATHING ---
+# Dynamically locate the project root directory so the script works on any machine
+# regardless of where the terminal is opened.
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", ".."))
+sys.path.append(PROJECT_ROOT)
+
+# --- DYNAMIC DATABASE PATH ---
+# Points exactly to the GitHub folder structure: data/vectorstore/short_chunks
+CHROMA_DB_DIR = os.path.join(PROJECT_ROOT, "data", "vectorstore", "short_chunks")
+EMBEDDING_MODEL_NAME = "text-embedding-3-small"
+
+# INITIALIZE MODELS & VECTOR DATABASE
+print("[*] Initializing OpenAI models & connecting to ChromaDB...")
+
 
 # -------------------------------------------------------------------
 # System prompt
@@ -26,18 +39,11 @@ SYSTEM_PROMPT = """
 You are a Clinical Auditor for NICE. You are justifying SNOMED CT codes for a research cohort.
 
 GROUNDING RULES:
-1. You will be provided with RETRIEVED CHUNKS from NICE guidelines wrapped in <CHUNK> tags.
-2. For each SNOMED code, you MUST find the specific CHUNK that mentions the condition or medication.
-3. Carefully check if the retrieved chunk actually justifies the inclusion of the SNOMED code. If it does not, write "No direct guideline evidence found."
-4. If the chunk justifies the inclusion of the SNOMED code, your justification must begin with a DIRECT QUOTE from that chunk.
+1. You must only use the provided <EVIDENCE_CHUNKS>. 
+2. If the evidence does not explicitly support the code for the specific cohort, you must state "No direct guideline evidence found."
+3. Every justification MUST start with a verbatim quote.
+4. Accuracy is critical: do not assume a code is valid just because it is in the list.
 
-
-JSON OUTPUT STRUCTURE:
-You must format your response EXACTLY as a JSON object with the following keys:
-- 'justification': Explain WHY a chunk is relevant for the justification of the SNOMED code in the final list. If no chunk is relevant , write "No direct guideline evidence found."
-- 'quote': The direct quote from the chunk.
-- 'page': The exact page number from the <CHUNK> tag's 'page' attribute. (mark "unknown" if you do not have this).
-- 'source_file': The exact filename from the <CHUNK> tag's 'source' attribute. (Leave blank if no evidence found).
 """
 
 TIER_THRESHOLDS = {
@@ -51,32 +57,43 @@ def assign_tier(confidence_score: float) -> str:
     elif confidence_score >= TIER_THRESHOLDS["tier_2"]: return "tier_2"
     else: return "tier_3"
 
-def _build_source_document(code: ValidatedCode) -> str:
-    found_in = code.get("found_in_codelists", [])
-    is_nhsd  = code.get("is_nhsd_refset", False)
-    count    = code.get("found_count", 0)
-
-    if not found_in: return "No reference codelist match found — clinical reasoning required"
-
-    sources = "; ".join(found_in[:3])
-    if count > 3: sources += f" (+ {count - 3} more)"
-    if is_nhsd: sources += " [NHS Digital curated refset]"
-    return sources
-
 def _build_justification_prompt(code, research_question, rag_context):
     return f"""
-COHORT: {research_question}
-CODE: {code['snomed_id']} ({code['preferred_term']})
+### RESEARCH COHORT
+{research_question}
 
-RETRIEVED GUIDELINE TEXT:
+### CLINICAL TERM TO JUSTIFY
+{code['preferred_term']}
+
+### EVIDENCE
+<EVIDENCE_CHUNKS>
 {rag_context}
+</EVIDENCE_CHUNKS>
 
-TASK:
-Identify the specific guideline text that justifies including '{code['preferred_term']}'. 
-Return ONLY a valid JSON object with 'justification', 'quote', and 'page'.
+### INSTRUCTIONS
+1. Analyze if the EVIDENCE justifies the CLINICAL TERM for the COHORT.
+2. If justified, start the 'justification' with a verbatim quote.
+3. If not found, set all fields to "No direct guideline evidence found."
+
+### OUTPUT FORMAT (JSON ONLY)
+{{
+  "clinical_reasoning": "Step-by-step logic here",
+  "justification": "Final audit statement",
+  "quote": "Direct quote from text",
+  "page": "Page number from attribute",
+  "source_file": "Source file from attribute"
+}}
+
+Return ONLY the JSON.
 """
 
 async def justification_node(state: NICEState) -> dict:
+
+    print("[*] Initializing OpenAI models & connecting to ChromaDB...")
+    embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL_NAME)
+    vector_db = Chroma(persist_directory=CHROMA_DB_DIR, embedding_function=embeddings)
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=1000)
+
     validated_codes     = state.get("validated_codes", [])
     research_question   = state.get("research_question", "")
     primary_condition   = state.get("primary_condition", "")
@@ -86,10 +103,11 @@ async def justification_node(state: NICEState) -> dict:
         print("[justification] No validated codes — skipping")
         return {"justifications": [], "human_review_flag": True}
 
-    rag_context = state.get("rag_context", "[RAG retrieval unavailable]")
     rag_sources = state.get("rag_sources", [])
 
     justifications: list[Justification] = []
+    primary_condition = state.get("primary_condition", "")
+    demographic = state.get("target_demographic", "adult")
 
     print(f"\n[justification] ── Generating justifications ──")
     print(f"[justification] Codes    : {len(validated_codes)}")
@@ -108,11 +126,20 @@ async def justification_node(state: NICEState) -> dict:
         semantic_score = code.get("semantic_score")
 
         if tier=="tier_1" or tier=="tier_2":
+
+            # Fetch exact, sniper-focused context for this specific code
+            code_context = retrieve_context_for_code(
+                snomed_term=code["preferred_term"],
+                category=code["category"],
+                primary_condition=primary_condition,
+                target_demographic=demographic,
+                vector_db=vector_db
+            )
         
             prompt = _build_justification_prompt(
                 code=code,
                 research_question=research_question,
-                rag_context=rag_context,
+                rag_context=code_context,
             )
 
             messages = [

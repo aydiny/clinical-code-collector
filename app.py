@@ -10,8 +10,9 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 try:
     from main import app as clinical_graph
-except Exception:
-    clinical_graph = None
+except Exception as e:
+    print(f"🚨 CRITICAL IMPORT ERROR IN MAIN.PY: {e} 🚨")
+    raise e  # This forces Python to stop and show you the actual bug!
 
 import streamlit as st
 import pandas as pd

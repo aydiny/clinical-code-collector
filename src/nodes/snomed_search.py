@@ -5,6 +5,7 @@ import asyncio
 from dotenv import load_dotenv
 from src.state import NICEState
 from src.utils.fhir_client import CONCEPT_TYPE_ROOTS, FHIR_BASE, MAX_RESULTS_PER_TERM, MAX_DESCENDANTS, _get_headers
+import re
 
 load_dotenv()
 
@@ -124,9 +125,23 @@ async def snomed_search_node(state: NICEState) -> dict:
     return {"candidate_codes": candidate_list}
 
 def _matches_exclusion(term: str, exclusions: list[str]) -> bool:
-    """Helper to check if a SNOMED term contains any of the excluded strings."""
+    """Helper to check if a SNOMED term contains any of the excluded strings using exact word boundaries."""
     if not exclusions:
         return False
         
     term_lower = term.lower()
-    return any(excl.lower() in term_lower for excl in exclusions if excl.strip())
+    
+    for excl in exclusions:
+        excl_clean = excl.strip().lower()
+        if not excl_clean:
+            continue
+            
+        # re.escape() safely handles any weird punctuation in the string
+        # \b ensures we only match whole words, not partial substrings
+        pattern = rf"\b{re.escape(excl_clean)}\b"
+        
+        # If we find a whole-word match, immediately reject the term
+        if re.search(pattern, term_lower):
+            return True
+            
+    return False

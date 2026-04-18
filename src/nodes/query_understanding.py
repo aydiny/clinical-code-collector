@@ -64,7 +64,7 @@ Your task is to parse a plain English patient cohort description into a structur
 # FIELD DEFINITIONS & RULES
 
 ## 1. Core Classification
-* primary_condition: The single most important clinical concept (string).
+* primary_condition: The single most important clinical concept, include any explicit co-morbidity within the research question (string).
 * concept_type: EXACTLY ONE OF: [diagnosis, observation, procedure, finding, lab_result, medication, demographic, situation, mixed]. Default to "diagnosis" for diseases.
 * snomed_top_hierarchy: EXACTLY ONE OF: [Clinical Finding, Procedure, Observable Entity, Substance, Body Structure, Situation, Mixed].
 * target_demographic: "adult" or "pediatric" (default "adult").

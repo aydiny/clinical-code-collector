@@ -134,7 +134,8 @@ def render_footer_credits():
     st.markdown("""
     <div class="footer-box">
         <p style="font-size:13px;color:#5F5E5A;margin-bottom:4px">This project was created by LAB FAM</p>
-        <p style="font-size:12px;color:#888780;margin-bottom:12px">University of Cambridge - 2025</p>
+        <p style="font-size:12px;color:#888780;margin-bottom:8px">University of Cambridge - 2025</p>
+        <p style="font-size:11px;color:#b85450;margin-bottom:12px">This is a proof of concept developed for NICE, supporting NHS clinical code generation. It is not intended for professional, clinical or commercial use. Outputs should not be used to inform real clinical decisions.</p>
         <div style="display:flex;align-items:center;justify-content:center;gap:16px">
             <div style="background:#003087;color:#fff;font-size:11px;font-weight:700;padding:3px 8px;border-radius:3px">NHS</div>
             <span style="font-size:12px;color:#888780">University of Cambridge</span>
@@ -145,18 +146,11 @@ def render_footer_credits():
 def render_header():
     col1, col2 = st.columns([3, 1])
     with col1:
-        st.title("NICE Clinical Code Generator")
+        st.title("3C - Clinical Code Collector")
         st.caption("AI-assisted code list generation - for expert clinical review only")
     with col2:
-        logo_col1, logo_col2, logo_col3 = st.columns([2, 0.1, 2])
+        logo_col1, = st.columns([1])
         with logo_col1:
-            try:
-                st.image("assets/NHS 10mm - RGB Blue on white.jpg", width=120)
-            except:
-                st.markdown('<div style="background:#003087;color:#fff;font-size:14px;font-weight:700;padding:6px 10px;border-radius:4px;text-align:center">NHS</div>', unsafe_allow_html=True)
-        with logo_col2:
-            st.markdown('<div style="border-left:1px solid #CC0000;opacity:0.3;height:60px;margin:auto"></div>', unsafe_allow_html=True)
-        with logo_col3:
             try:
                 st.image("assets/The University logo.png", width=200)
             except:

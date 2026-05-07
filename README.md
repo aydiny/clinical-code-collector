@@ -1,4 +1,5 @@
 # 3C: Clinical Code Collector 🏥🤖
+<img width="1762" height="1213" alt="3C - Clinical_Code_Collector_Workflow_Final" src="https://github.com/user-attachments/assets/0f71f755-c61f-433a-856f-0479c214cc47" />
 
 > An AI-assisted, agentic pipeline for **defensible, explainable, and auditable** SNOMED CT clinical code discovery — built for NICE (National Institute for Health and Care Excellence).
 
